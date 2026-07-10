@@ -254,3 +254,39 @@ body {
 }
 
 .hint { font-size: 0.8rem; color: #777; }
+
+/* Chat list modal */
+.chat-list {
+  max-height: 50vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.chat-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  background: #f4f8f4;
+}
+
+.chat-row.active {
+  background: #e3f2e4;
+  outline: 1px solid var(--green);
+}
+
+.chat-row-title {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  color: #222;
+}
+
+.icon-btn.small { font-size: 1rem; padding: 4px 8px; }

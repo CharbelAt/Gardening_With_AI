@@ -1,9 +1,21 @@
-import { addMessage, getAllMessages, clearAllMessages } from "./idb.js";
+import {
+  addMessage,
+  getAllMessages,
+  clearAllMessages,
+  addChat,
+  getAllChats,
+  updateChat,
+  deleteChat,
+  clearAllChats,
+  ensureDefaultChat,
+  getMessagesByChat,
+} from "./idb.js";
 
 const { useState, useEffect, useRef, useCallback } = React;
 
 const LS_API_BASE = "gc_apiBase";
 const LS_SECRET = "gc_clientSecret";
+const LS_ACTIVE_CHAT = "gc_activeChatId";
 const CONTEXT_LIMIT = 12; // how many past messages get sent back to the AI as context
 
 const SYSTEM_PROMPT_BASE =
@@ -104,8 +116,9 @@ function SettingsModal({ onClose, onCleared }) {
   }
 
   async function clearMemory() {
-    if (!confirm("Delete all locally-stored conversation history? This can't be undone.")) return;
+    if (!confirm("Delete ALL chats and conversation history on this device? This can't be undone.")) return;
     await clearAllMessages();
+    await clearAllChats();
     onCleared();
   }
 
@@ -143,6 +156,31 @@ function SettingsModal({ onClose, onCleared }) {
   );
 }
 
+function ChatListModal({ chats, activeChatId, onSwitch, onNew, onRename, onDelete, onClose }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Chats</h2>
+        <div className="chat-list">
+          {chats.map((c) => (
+            <div key={c.id} className={c.id === activeChatId ? "chat-row active" : "chat-row"}>
+              <button className="chat-row-title" onClick={() => onSwitch(c.id)}>
+                {c.title || "Untitled chat"}
+              </button>
+              <button className="icon-btn small" title="Rename" onClick={() => onRename(c)}>✏️</button>
+              <button className="icon-btn small" title="Delete" onClick={() => onDelete(c)}>🗑️</button>
+            </div>
+          ))}
+        </div>
+        <div className="modal-actions">
+          <button className="btn" onClick={onNew}>+ New chat</button>
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({ msg }) {
   return (
     <div className={`bubble ${msg.role}`}>
@@ -154,7 +192,7 @@ function MessageBubble({ msg }) {
   );
 }
 
-function ChatTab({ messages, setMessages, busy, setBusy }) {
+function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const fileInputRef = useRef(null);
@@ -169,7 +207,7 @@ function ChatTab({ messages, setMessages, busy, setBusy }) {
     if (!text || busy) return;
     setInput("");
     setError("");
-    const userMsg = { role: "user", kind: "text", text, createdAt: Date.now() };
+    const userMsg = { chatId, role: "user", kind: "text", text, createdAt: Date.now() };
     userMsg.id = await addMessage(userMsg);
     const nextHistory = [...messages, userMsg];
     setMessages(nextHistory);
@@ -178,7 +216,7 @@ function ChatTab({ messages, setMessages, busy, setBusy }) {
       const data = await apiFetch("/api/chat", {
         messages: buildContextMessages(nextHistory, "chat"),
       });
-      const aiMsg = { role: "assistant", kind: "text", text: data.reply, createdAt: Date.now() };
+      const aiMsg = { chatId, role: "assistant", kind: "text", text: data.reply, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
     } catch (e) {
@@ -198,6 +236,7 @@ function ChatTab({ messages, setMessages, busy, setBusy }) {
       const dataUrl = await resizeImageToDataUrl(file);
       const [, base64] = dataUrl.split(",");
       const userMsg = {
+        chatId,
         role: "user",
         kind: "image",
         text: "What's going on with this plant?",
@@ -213,7 +252,7 @@ function ChatTab({ messages, setMessages, busy, setBusy }) {
         prompt:
           "Identify this plant, assess its health from the photo, and give concrete gardening care advice.",
       });
-      const aiMsg = { role: "assistant", kind: "text", text: data.reply, createdAt: Date.now() };
+      const aiMsg = { chatId, role: "assistant", kind: "text", text: data.reply, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
     } catch (e) {
@@ -270,7 +309,7 @@ function ChatTab({ messages, setMessages, busy, setBusy }) {
   );
 }
 
-function CallTab({ messages, setMessages }) {
+function CallTab({ chatId, messages, setMessages }) {
   const SpeechRecognitionCtor =
     window.SpeechRecognition || window.webkitSpeechRecognition;
   const supported = !!SpeechRecognitionCtor && "speechSynthesis" in window;
@@ -282,11 +321,31 @@ function CallTab({ messages, setMessages }) {
 
   const recognitionRef = useRef(null);
   const callActiveRef = useRef(false);
+  const statusRef = useRef("idle");
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
 
+  function updateStatus(next) {
+    statusRef.current = next;
+    setStatus(next);
+  }
+
+  // Kills whatever recognizer is currently running, detaching its onend first
+  // so stopping it doesn't trigger the auto-restart logic below.
+  function killRecognition() {
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      try {
+        recognitionRef.current.abort();
+      } catch (_) {}
+      recognitionRef.current = null;
+    }
+  }
+
   const startListening = useCallback(() => {
     if (!callActiveRef.current) return;
+    killRecognition(); // never run two recognizers at once
+
     const rec = new SpeechRecognitionCtor();
     rec.lang = "en-US";
     rec.continuous = false;
@@ -309,8 +368,12 @@ function CallTab({ messages, setMessages }) {
     };
 
     rec.onend = () => {
-      // If nothing final came through and the call is still on, keep listening.
-      if (callActiveRef.current && status !== "thinking" && status !== "speaking") {
+      // Only auto-restart if we're still supposed to be in the listening
+      // phase (e.g. it timed out on silence). Reading statusRef here instead
+      // of the React state avoids a stale-closure bug where this handler
+      // would restart the mic during "thinking"/"speaking" and pick up the
+      // AI's own voice as new input.
+      if (callActiveRef.current && statusRef.current === "listening") {
         try {
           rec.start();
         } catch (_) {}
@@ -318,18 +381,18 @@ function CallTab({ messages, setMessages }) {
     };
 
     recognitionRef.current = rec;
-    setStatus("listening");
+    updateStatus("listening");
     setLiveTranscript("");
     rec.start();
-  }, [status]);
+  }, []);
 
   async function handleUserUtterance(text) {
-    recognitionRef.current?.stop();
-    setStatus("thinking");
+    killRecognition();
+    updateStatus("thinking");
     setLiveTranscript("");
     setError("");
 
-    const userMsg = { role: "user", kind: "text", text, createdAt: Date.now() };
+    const userMsg = { chatId, role: "user", kind: "text", text, createdAt: Date.now() };
     userMsg.id = await addMessage(userMsg);
     const nextHistory = [...messagesRef.current, userMsg];
     setMessages(nextHistory);
@@ -339,24 +402,29 @@ function CallTab({ messages, setMessages }) {
         messages: buildContextMessages(nextHistory, "call"),
       });
       const reply = data.reply || "Sorry, I didn't catch that.";
-      const aiMsg = { role: "assistant", kind: "text", text: reply, createdAt: Date.now() };
+      const aiMsg = { chatId, role: "assistant", kind: "text", text: reply, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
       speak(reply);
     } catch (e) {
       setError(e.message);
-      setStatus("listening");
       if (callActiveRef.current) startListening();
+      else updateStatus("idle");
     }
   }
 
   function speak(text) {
-    setStatus("speaking");
+    killRecognition(); // guarantee the mic is off before we start talking
+    updateStatus("speaking");
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 1.0;
     utter.onend = () => {
-      if (callActiveRef.current) startListening();
-      else setStatus("idle");
+      // Short pause lets the phone speaker's audio tail die out before the
+      // mic reopens, so it doesn't hear its own reply as new input.
+      setTimeout(() => {
+        if (callActiveRef.current) startListening();
+        else updateStatus("idle");
+      }, 500);
     };
     utter.onerror = () => {
       if (callActiveRef.current) startListening();
@@ -375,9 +443,9 @@ function CallTab({ messages, setMessages }) {
   function endCall() {
     callActiveRef.current = false;
     setCallActive(false);
-    setStatus("idle");
+    updateStatus("idle");
     setLiveTranscript("");
-    recognitionRef.current?.stop();
+    killRecognition();
     window.speechSynthesis.cancel();
   }
 
@@ -417,23 +485,81 @@ function CallTab({ messages, setMessages }) {
 }
 
 function App() {
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [tab, setTab] = useState("chat");
   const [busy, setBusy] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showChatList, setShowChatList] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
+  // Initial load: run the one-time migration, figure out which chat is
+  // active, and load its messages.
   useEffect(() => {
-    getAllMessages().then((history) => {
+    (async () => {
+      const defaultId = await ensureDefaultChat();
+      const allChats = await getAllChats();
+      setChats(allChats);
+
+      const stored = Number(localStorage.getItem(LS_ACTIVE_CHAT));
+      const activeId = allChats.some((c) => c.id === stored) ? stored : defaultId;
+      setActiveChatId(activeId);
+
+      const history = await getMessagesByChat(activeId);
       setMessages(history);
       setLoaded(true);
       if (!getSettings().apiBase) setShowSettings(true);
-    });
+    })();
   }, []);
+
+  async function switchChat(id) {
+    setActiveChatId(id);
+    localStorage.setItem(LS_ACTIVE_CHAT, String(id));
+    const history = await getMessagesByChat(id);
+    setMessages(history);
+    setShowChatList(false);
+  }
+
+  async function newChat() {
+    const id = await addChat({ title: `Chat ${chats.length + 1}` });
+    const allChats = await getAllChats();
+    setChats(allChats);
+    await switchChat(id);
+  }
+
+  async function renameChat(chat) {
+    const title = prompt("Rename chat", chat.title);
+    if (!title || !title.trim()) return;
+    await updateChat({ ...chat, title: title.trim() });
+    setChats(await getAllChats());
+  }
+
+  async function removeChat(chat) {
+    if (!confirm(`Delete "${chat.title}" and all its messages? This can't be undone.`)) return;
+    await deleteChat(chat.id);
+    const allChats = await getAllChats();
+    if (allChats.length === 0) {
+      // Always keep at least one chat around.
+      const id = await ensureDefaultChat();
+      setChats(await getAllChats());
+      await switchChat(id);
+    } else {
+      setChats(allChats);
+      if (chat.id === activeChatId) await switchChat(allChats[0].id);
+    }
+  }
+
+  async function onMemoryCleared() {
+    const id = await ensureDefaultChat();
+    setChats(await getAllChats());
+    await switchChat(id);
+  }
 
   return (
     <div className="app">
       <header className="app-header">
+        <button className="icon-btn" onClick={() => setShowChatList(true)} title="Chats">💬</button>
         <span className="app-title">🌱 Garden Companion</span>
         <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">⚙️</button>
       </header>
@@ -444,16 +570,28 @@ function App() {
       </nav>
 
       {loaded && tab === "chat" && (
-        <ChatTab messages={messages} setMessages={setMessages} busy={busy} setBusy={setBusy} />
+        <ChatTab chatId={activeChatId} messages={messages} setMessages={setMessages} busy={busy} setBusy={setBusy} />
       )}
       {loaded && tab === "call" && (
-        <CallTab messages={messages} setMessages={setMessages} />
+        <CallTab chatId={activeChatId} messages={messages} setMessages={setMessages} />
+      )}
+
+      {showChatList && (
+        <ChatListModal
+          chats={chats}
+          activeChatId={activeChatId}
+          onSwitch={switchChat}
+          onNew={newChat}
+          onRename={renameChat}
+          onDelete={removeChat}
+          onClose={() => setShowChatList(false)}
+        />
       )}
 
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}
-          onCleared={() => setMessages([])}
+          onCleared={onMemoryCleared}
         />
       )}
     </div>
