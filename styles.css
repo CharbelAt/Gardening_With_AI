@@ -1,0 +1,256 @@
+:root {
+  --green: #2e7d32;
+  --green-dark: #1b5e20;
+  --bg: #f4f8f4;
+  --bubble-user: #2e7d32;
+  --bubble-ai: #ffffff;
+  font-family: -apple-system, Roboto, Segoe UI, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: #1a1a1a;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-width: 480px;
+  margin: 0 auto;
+  background: var(--bg);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--green);
+  color: white;
+}
+
+.app-title { font-weight: 600; font-size: 1.1rem; }
+
+.icon-btn {
+  background: none;
+  border: none;
+  font-size: 1.3rem;
+  cursor: pointer;
+  color: inherit;
+  padding: 4px 8px;
+}
+
+.tabs {
+  display: flex;
+  background: white;
+  border-bottom: 1px solid #ddd;
+}
+
+.tab {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  background: none;
+  font-size: 0.95rem;
+  color: #555;
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+}
+
+.tab.active {
+  color: var(--green-dark);
+  border-bottom-color: var(--green);
+  font-weight: 600;
+}
+
+.tab-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.empty-hint {
+  color: #777;
+  text-align: center;
+  margin-top: 40px;
+  padding: 0 20px;
+}
+
+.bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: var(--bubble-user);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.bubble.assistant {
+  align-self: flex-start;
+  background: var(--bubble-ai);
+  border: 1px solid #e0e0e0;
+  border-bottom-left-radius: 4px;
+}
+
+.bubble.typing { color: #999; }
+
+.bubble-img {
+  max-width: 100%;
+  border-radius: 10px;
+  margin-bottom: 6px;
+  display: block;
+}
+
+.error-banner {
+  background: #fdecea;
+  color: #b3261e;
+  padding: 8px 12px;
+  margin: 0 12px 8px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: white;
+  border-top: 1px solid #ddd;
+}
+
+.text-input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid #ccc;
+  border-radius: 20px;
+  font-size: 1rem;
+}
+
+.btn {
+  background: var(--green);
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 20px;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.btn-ghost {
+  background: none;
+  color: var(--green-dark);
+  border: 1px solid var(--green);
+}
+
+.btn-danger {
+  background: #b3261e;
+  width: 100%;
+  margin-top: 8px;
+}
+
+/* Call tab */
+.call-tab {
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 20px;
+}
+
+.call-orb {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #66bb6a, var(--green-dark));
+  box-shadow: 0 0 0 0 rgba(46, 125, 50, 0.5);
+  transition: box-shadow 0.3s ease;
+}
+
+.call-orb.listening { animation: pulse 1.4s infinite; }
+.call-orb.thinking { opacity: 0.6; }
+.call-orb.speaking { animation: pulse 0.6s infinite; }
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(46, 125, 50, 0.5); }
+  70% { box-shadow: 0 0 0 24px rgba(46, 125, 50, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(46, 125, 50, 0); }
+}
+
+.call-status { font-size: 1.05rem; color: #444; }
+.live-transcript { color: #888; font-style: italic; text-align: center; }
+
+.btn-call, .btn-end-call {
+  padding: 14px 28px;
+  border-radius: 30px;
+  font-size: 1rem;
+}
+
+.btn-end-call { background: #b3261e; }
+
+/* Settings modal */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.modal {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  width: 100%;
+  max-width: 380px;
+}
+
+.modal h2 { margin-top: 0; }
+
+.modal label {
+  display: block;
+  font-size: 0.85rem;
+  color: #555;
+  margin-bottom: 12px;
+}
+
+.modal input {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  margin-top: 4px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.hint { font-size: 0.8rem; color: #777; }
