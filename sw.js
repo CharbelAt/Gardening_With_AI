@@ -3,7 +3,7 @@
 // this app is actively being updated — you always want the latest app.jsx
 // over a stale cached copy. The cache is only a fallback for when there's no
 // network at all. AI calls and CDN scripts always go straight to the network.
-const CACHE = "garden-companion-v3";
+const CACHE = "garden-companion-v4";
 const SHELL = [
   "./",
   "./index.html",
@@ -13,6 +13,14 @@ const SHELL = [
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
+  "./modules/helpers.jsx",
+  "./modules/shared-ui.jsx",
+  "./modules/chat.jsx",
+  "./modules/call.jsx",
+  "./modules/inventory.jsx",
+  "./modules/routines.jsx",
+  "./modules/garden.jsx",
+  "./modules/codex.jsx",
 ];
 
 self.addEventListener("install", (event) => {

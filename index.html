@@ -18,8 +18,30 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
+<!-- Markdown rendering for AI replies: marked parses it, DOMPurify sanitizes
+     the HTML before it's ever injected into the page (AI replies can now
+     include web search content, so this isn't optional). -->
+<script src="https://unpkg.com/marked@12/marked.min.js" crossorigin></script>
+<script src="https://unpkg.com/dompurify@3/dist/purify.min.js" crossorigin></script>
 
-<script type="text/babel" data-type="module" data-presets="react" src="./app.jsx"></script>
+<!-- idb.js is plain JS (no JSX), loaded as a normal classic script so its
+     functions become globals for everything below. -->
+<script src="./idb.js"></script>
+
+<!-- Each module below is Babel-transformed but loaded as a classic script
+     (no data-type="module"), so they all share one global scope instead of
+     using import/export — this is what lets the app stay build-less while
+     still being split into files. Order matters: helpers first, app.jsx
+     last (it references every view component). -->
+<script type="text/babel" data-presets="react" src="./modules/helpers.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/shared-ui.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/chat.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/call.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/inventory.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/routines.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/garden.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/codex.jsx"></script>
+<script type="text/babel" data-presets="react" src="./app.jsx"></script>
 
 <script>
   if ("serviceWorker" in navigator) {

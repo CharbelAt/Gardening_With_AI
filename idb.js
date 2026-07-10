@@ -94,21 +94,29 @@ async function clearStore(store) {
 }
 
 // ---------- chats (multiple conversation threads) ----------
+//
+// NOTE: this file is loaded as a plain classic <script> (see index.html) so
+// every function below is a normal global, shared with modules/*.jsx and
+// app.jsx via the browser's global scope — no import/export, and no build
+// step required. This is intentional: it keeps the whole app deployable by
+// just editing files and committing to GitHub Pages, per Babel-standalone's
+// limitation that <script type="text/babel"> can't resolve real ES imports
+// between files without a real bundler.
 
 // chat: { title, createdAt }
-export function addChat(chat) {
+function addChat(chat) {
   return addRecord(STORE_CHATS, { title: chat.title || "New chat", createdAt: Date.now() });
 }
-export function getAllChats() {
+function getAllChats() {
   return getAllRecords(STORE_CHATS);
 }
-export function updateChat(chat) {
+function updateChat(chat) {
   return putRecord(STORE_CHATS, chat);
 }
-export function clearAllChats() {
+function clearAllChats() {
   return clearStore(STORE_CHATS);
 }
-export async function deleteChat(id) {
+async function deleteChat(id) {
   const all = await getAllRecords(STORE_MESSAGES);
   const db = await openDB();
   await new Promise((resolve, reject) => {
@@ -127,7 +135,7 @@ export async function deleteChat(id) {
 // messages without a chatId (from before multi-chat support), file them all
 // under a new default chat instead of losing them. Returns the chat id that
 // should be treated as active if none is currently selected.
-export async function ensureDefaultChat() {
+async function ensureDefaultChat() {
   const chats = await getAllChats();
   if (chats.length > 0) return chats[0].id;
 
@@ -143,52 +151,55 @@ export async function ensureDefaultChat() {
 // ---------- messages (chat/call memory) ----------
 
 // msg: { chatId, role: 'user'|'assistant', kind: 'text'|'image', text, imageThumb?, createdAt }
-export function addMessage(msg) {
+function addMessage(msg) {
   return addRecord(STORE_MESSAGES, { ...msg, createdAt: msg.createdAt || Date.now() });
 }
-export function getAllMessages() {
+function getAllMessages() {
   return getAllRecords(STORE_MESSAGES);
 }
-export async function getMessagesByChat(chatId) {
+async function getMessagesByChat(chatId) {
   const all = await getAllRecords(STORE_MESSAGES);
   return all.filter((m) => m.chatId === chatId);
 }
-export function clearAllMessages() {
+function updateMessage(msg) {
+  return putRecord(STORE_MESSAGES, msg);
+}
+function clearAllMessages() {
   return clearStore(STORE_MESSAGES);
 }
 
 // ---------- tools (inventory) ----------
 
-// tool: { name, quantity, createdAt }
-export function addTool(tool) {
+// tool: { name, quantity, notes, createdAt }
+function addTool(tool) {
   return addRecord(STORE_TOOLS, { ...tool, createdAt: Date.now() });
 }
-export function getAllTools() {
+function getAllTools() {
   return getAllRecords(STORE_TOOLS);
 }
-export function deleteTool(id) {
+function deleteTool(id) {
   return deleteRecord(STORE_TOOLS, id);
 }
-export function updateTool(tool) {
+function updateTool(tool) {
   return putRecord(STORE_TOOLS, tool);
 }
 
 // ---------- routines (recurring care tasks) ----------
 
 // routine: { task, intervalDays, lastDone: timestamp|null, createdAt }
-export function addRoutine(routine) {
+function addRoutine(routine) {
   return addRecord(STORE_ROUTINES, { ...routine, lastDone: null, createdAt: Date.now() });
 }
-export function getAllRoutines() {
+function getAllRoutines() {
   return getAllRecords(STORE_ROUTINES);
 }
-export function deleteRoutine(id) {
+function deleteRoutine(id) {
   return deleteRecord(STORE_ROUTINES, id);
 }
-export function updateRoutine(routine) {
+function updateRoutine(routine) {
   return putRecord(STORE_ROUTINES, routine);
 }
-export function isRoutineDue(routine) {
+function isRoutineDue(routine) {
   if (!routine.lastDone) return true;
   const dueAt = routine.lastDone + routine.intervalDays * 24 * 60 * 60 * 1000;
   return Date.now() >= dueAt;
@@ -197,8 +208,8 @@ export function isRoutineDue(routine) {
 // ---------- plants ----------
 
 // plant: { name, notes, plantingDate, location, lastWatered, lastFertilized,
-//          photoHistory: [{ imageThumb, analysis, date }], createdAt }
-export function addPlant(plant) {
+//          photoHistory: [{ imageThumb?, analysis, date, kind }], createdAt }
+function addPlant(plant) {
   return addRecord(STORE_PLANTS, {
     name: plant.name || "",
     notes: plant.notes || "",
@@ -210,12 +221,12 @@ export function addPlant(plant) {
     createdAt: Date.now(),
   });
 }
-export function getAllPlants() {
+function getAllPlants() {
   return getAllRecords(STORE_PLANTS);
 }
-export function deletePlant(id) {
+function deletePlant(id) {
   return deleteRecord(STORE_PLANTS, id);
 }
-export function updatePlant(plant) {
+function updatePlant(plant) {
   return putRecord(STORE_PLANTS, plant);
 }
