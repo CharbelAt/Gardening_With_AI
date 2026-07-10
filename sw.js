@@ -1,7 +1,9 @@
 // Minimal service worker: caches the app shell so the PWA is installable and
-// opens instantly. AI calls and CDN scripts always go to the network (a cached
-// AI reply would be useless), only local static files get cache-first.
-const CACHE = "garden-companion-v1";
+// works offline. Uses network-first for local files (not cache-first) since
+// this app is actively being updated — you always want the latest app.jsx
+// over a stale cached copy. The cache is only a fallback for when there's no
+// network at all. AI calls and CDN scripts always go straight to the network.
+const CACHE = "garden-companion-v3";
 const SHELL = [
   "./",
   "./index.html",
@@ -36,14 +38,12 @@ self.addEventListener("fetch", (event) => {
   }
 
   event.respondWith(
-    caches.match(event.request).then(
-      (cached) =>
-        cached ||
-        fetch(event.request).then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((cache) => cache.put(event.request, copy));
-          return res;
-        })
-    )
+    fetch(event.request)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+        return res;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
