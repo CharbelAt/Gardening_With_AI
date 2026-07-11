@@ -94,27 +94,16 @@ function CallTab({ chatId, messages, setMessages }) {
       const data = await apiFetch("/api/chat", {
         messages: await buildContextMessages(nextHistory, "call"),
       });
-      const { cleanText, action } = extractPlantUpdate(data.reply || "");
+      const { cleanText, actions } = extractActions(data.reply || "");
       const reply = cleanText || "Sorry, I didn't catch that.";
       const aiMsg = { chatId, role: "assistant", kind: "text", text: reply, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
       speak(reply);
       // Voice calls apply updates only in auto mode — there's no good way to
-      // show a confirm prompt mid-call, so confirm-mode just skips writing.
-      if (action && getAiWriteMode() === "auto") {
-        if (action.type === "add") {
-          await applyPlantAdd(action.fields || {});
-        } else if (action.type === "add_tool") {
-          await applyToolAdd(action.fields || {});
-        } else if (action.type === "remove_tool") {
-          const tool = await resolveToolTarget(action);
-          if (tool) await applyToolRemove(tool);
-        } else {
-          const plant = await resolvePlantTarget(action);
-          if (plant) await applyPlantUpdate(plant, action.fields || {});
-        }
-      }
+      // show a confirm prompt mid-call, so confirm-mode just skips writing
+      // (handleAiActions does exactly that when passed no pending-queue setter).
+      await handleAiActions(actions, null);
     } catch (e) {
       setError(e.message);
       if (callActiveRef.current) startListening();
@@ -125,7 +114,7 @@ function CallTab({ chatId, messages, setMessages }) {
   function speak(text) {
     killRecognition(); // guarantee the mic is off before we start talking
     updateStatus("speaking");
-    const utter = new SpeechSynthesisUtterance(text);
+    const utter = new SpeechSynthesisUtterance(stripForSpeech(text));
     utter.rate = 1.0;
     utter.onend = () => {
       // Short pause lets the phone speaker's audio tail die out before the

@@ -1,5 +1,6 @@
 // App-shell / reusable UI: confirm & prompt dialogs, settings, the chat
-// switcher, message bubbles, the side drawer, and the help manual.
+// switcher, message bubbles, the bottom navigation bar, the AI-action
+// confirm banner, and the help manual.
 
 // Generic replacements for window.confirm()/prompt() — styled to match the
 // app instead of the browser's native dialog boxes.
@@ -42,7 +43,20 @@ function PromptModal({ title = "Enter a value", label, initialValue = "", confir
   );
 }
 
-function SettingsModal({ onClose, onCleared, theme, onThemeChange }) {
+// Full-screen viewer for plant photos (tap a history thumbnail to open).
+function ImageLightbox({ src, caption, onClose }) {
+  return (
+    <div className="lightbox-backdrop" onClick={onClose}>
+      <img src={src} alt="" onClick={(e) => e.stopPropagation()} />
+      {caption && <p className="lightbox-caption">{caption}</p>}
+      <button className="icon-btn lightbox-close" onClick={onClose} title="Close">
+        <i className="bi bi-x-lg"></i>
+      </button>
+    </div>
+  );
+}
+
+function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange }) {
   const [apiBase, setApiBase] = useState(getSettings().apiBase);
   const [secret, setSecret] = useState(getSettings().secret);
   const [writeMode, setWriteMode] = useState(getAiWriteMode());
@@ -87,7 +101,7 @@ function SettingsModal({ onClose, onCleared, theme, onThemeChange }) {
           />
         </label>
         <label>
-          AI plant updates
+          AI data updates
           <select value={writeMode} onChange={(e) => setWriteMode(e.target.value)}>
             <option value="auto">Apply automatically</option>
             <option value="confirm">Ask before saving</option>
@@ -114,6 +128,9 @@ function SettingsModal({ onClose, onCleared, theme, onThemeChange }) {
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         </div>
         <hr />
+        <button className="btn btn-ghost btn-block" onClick={onShowHelp}>
+          <i className="bi bi-question-circle"></i> How to use Garden Companion
+        </button>
         <p className="hint">Conversation memory is stored only in this browser.</p>
         <button className="btn btn-danger" onClick={() => setConfirmClear(true)}>Clear local memory</button>
       </div>
@@ -166,7 +183,7 @@ function MessageBubble({ msg, onRegenerate, regenerating }) {
       setSpeaking(false);
       return;
     }
-    const utter = new SpeechSynthesisUtterance(msg.text);
+    const utter = new SpeechSynthesisUtterance(stripForSpeech(msg.text));
     utter.onend = () => setSpeaking(false);
     utter.onerror = () => setSpeaking(false);
     window.speechSynthesis.cancel();
@@ -209,32 +226,80 @@ function MessageBubble({ msg, onRegenerate, regenerating }) {
   );
 }
 
-// ---------- side drawer + help ----------
+// ---------- AI-proposed changes (confirm mode) ----------
 
-function SideDrawer({ onClose, onNavigate }) {
-  const rows = [
-    { key: "garden", label: "Garden", icon: "bi-flower3" },
-    { key: "inventory", label: "Inventory", icon: "bi-box-seam" },
-    { key: "routines", label: "Routines", icon: "bi-arrow-repeat" },
-    { key: "codex", label: "Codex", icon: "bi-book" },
-    { key: "settings", label: "Settings", icon: "bi-gear" },
-    { key: "help", label: "Help", icon: "bi-question-circle" },
-  ];
+// One banner for however many actions the AI proposed in a reply. Each row
+// can be applied or dismissed on its own; "Apply all" clears the queue.
+function PendingActionsBanner({ actions, onResolve }) {
+  if (!actions || actions.length === 0) return null;
+
+  async function applyOne(index) {
+    await applyResolvedAction(actions[index]);
+    onResolve(actions.filter((_, i) => i !== index));
+  }
+  function dismissOne(index) {
+    onResolve(actions.filter((_, i) => i !== index));
+  }
+  async function applyAll() {
+    for (const a of actions) await applyResolvedAction(a);
+    onResolve([]);
+  }
+
   return (
-    <div className="drawer-backdrop" onClick={onClose}>
-      <div className="drawer" onClick={(e) => e.stopPropagation()}>
-        <div className="drawer-header">
-          <span className="app-title"><i className="bi bi-flower1"></i> Garden Companion</span>
-          <button className="icon-btn" onClick={onClose}><i className="bi bi-x-lg"></i></button>
-        </div>
-        {rows.map((r) => (
-          <button key={r.key} className="drawer-row" onClick={() => onNavigate(r.key)}>
-            <i className={`bi ${r.icon}`}></i>
-            <span>{r.label}</span>
-          </button>
-        ))}
+    <div className="confirm-banner">
+      <div className="confirm-banner-title">
+        <i className="bi bi-magic"></i> Sprout suggests {actions.length === 1 ? "a change" : `${actions.length} changes`}:
       </div>
+      {actions.map((a, i) => (
+        <div key={i} className="confirm-row">
+          <span>{describeAction(a)}</span>
+          <div className="confirm-actions">
+            <button className="btn small" onClick={() => applyOne(i)}>Apply</button>
+            <button className="btn btn-ghost small" onClick={() => dismissOne(i)}>Dismiss</button>
+          </div>
+        </div>
+      ))}
+      {actions.length > 1 && (
+        <div className="confirm-actions confirm-all">
+          <button className="btn small" onClick={applyAll}>Apply all</button>
+          <button className="btn btn-ghost small" onClick={() => onResolve([])}>Dismiss all</button>
+        </div>
+      )}
     </div>
+  );
+}
+
+// ---------- bottom navigation ----------
+
+const NAV_ITEMS = [
+  { key: "chat", label: "Chat", icon: "bi-chat-dots" },
+  { key: "garden", label: "Garden", icon: "bi-flower3" },
+  { key: "routines", label: "Routines", icon: "bi-arrow-repeat" },
+  { key: "inventory", label: "Inventory", icon: "bi-box-seam" },
+  { key: "codex", label: "Codex", icon: "bi-book" },
+];
+
+function BottomNav({ view, onNavigate, dueCount }) {
+  // The Call view is entered from the Chat header; highlight Chat while in it.
+  const activeKey = view === "call" ? "chat" : view;
+  return (
+    <nav className="bottom-nav">
+      {NAV_ITEMS.map((item) => (
+        <button
+          key={item.key}
+          className={activeKey === item.key ? "bottom-nav-item active" : "bottom-nav-item"}
+          onClick={() => onNavigate(item.key)}
+        >
+          <span className="bottom-nav-icon">
+            <i className={`bi ${item.icon}`}></i>
+            {item.key === "routines" && dueCount > 0 && (
+              <span className="nav-badge">{dueCount > 9 ? "9+" : dueCount}</span>
+            )}
+          </span>
+          <span className="bottom-nav-label">{item.label}</span>
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -244,24 +309,26 @@ function HelpModal({ onClose }) {
       <div className="modal help-modal" onClick={(e) => e.stopPropagation()}>
         <h2>How to use Garden Companion</h2>
         <div className="help-content">
+          <h3>Getting around</h3>
+          <p>The bar at the bottom switches between Chat, Garden, Routines, Inventory, and Codex. The phone icon in the Chat header starts a voice call; the gear opens Settings.</p>
           <h3>Chat</h3>
-          <p>Type gardening questions to Sprout. Tap the camera icon to analyze a photo of a plant — it'll identify it and assess its health.</p>
+          <p>Type gardening questions to Sprout. Tap the camera icon to analyze a photo of a plant — it'll identify it and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil".</p>
           <h3>Call</h3>
-          <p>Tap Start Call for a hands-free voice conversation. Speak, wait for the reply, then keep talking. Works best in Chrome on Android.</p>
+          <p>Tap the phone icon in the Chat header for a hands-free voice conversation. Speak, wait for the reply, then keep talking. Works best in Chrome on Android.</p>
           <h3>Chats</h3>
-          <p>The chat bubble icon at the top lets you keep separate conversation threads, rename them, or start a new one.</p>
+          <p>The chat-bubbles icon in the header lets you keep separate conversation threads, rename them, or start a new one. New chats name themselves after your first message.</p>
           <h3>Garden</h3>
-          <p>Track your individual plants: name, location, planting date, and care history. Take photos from a plant's page to build a history and let the AI suggest updates to its record.</p>
-          <h3>Inventory</h3>
-          <p>Your gardening tools and supplies as cards — tap one for details, notes, and to edit or delete it. You can also just tell the AI in chat what you bought or used up and it'll update this for you.</p>
+          <p>Track your plants: name, location, planting date, and a full care history. Take photos from a plant's page to build its timeline, tap any photo to view it full-screen, and use "Ask Sprout" to jump into chat about that specific plant.</p>
           <h3>Routines</h3>
-          <p>Recurring care tasks (watering, fertilizing) as cards, with a "Due" badge when one's overdue. Tap a card for details, to mark it done, or to edit it.</p>
+          <p>Recurring care tasks with a "Due" badge when overdue (also shown on the bottom bar). Link a routine to a plant with a care action — marking "Water the ficus" done then updates the ficus's watering record automatically.</p>
+          <h3>Inventory</h3>
+          <p>Your tools and supplies as cards — tap one for details or to edit it. Telling Sprout what you bought or used up keeps this in sync too.</p>
           <h3>Codex</h3>
-          <p>A quick-reference library of common plants, pests, and gardening topics — browse or search it any time. If nothing matches, tap the search icon for an in-depth AI search with sources.</p>
+          <p>A quick-reference library of plants, pests, and topics. If nothing matches your search, run the in-depth AI search with sources — and save good results into your own library.</p>
           <h3>Settings</h3>
-          <p>Set your backend URL and client secret (from your VPS), choose whether AI-suggested plant updates apply automatically or ask first, and clear local data if needed.</p>
+          <p>Set your backend URL and client secret (from your VPS), choose whether AI-suggested updates apply automatically or ask first, and clear local data if needed.</p>
           <h3>Your data</h3>
-          <p>Everything (chats, plants, tools, routines) is stored only in this browser — nothing is synced anywhere else.</p>
+          <p>Everything (chats, plants, tools, routines, saved codex entries) is stored only in this browser — nothing is synced anywhere else.</p>
         </div>
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Close</button>

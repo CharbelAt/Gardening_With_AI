@@ -1,23 +1,25 @@
-// The typed Chat tab: text + photo messages, plant/inventory action
-// confirmations, and per-message regenerate/copy/read-aloud.
+// The typed Chat tab: text + photo messages, AI action confirmations
+// (multi-action aware), and per-message regenerate/copy/read-aloud.
 
-function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
+function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftConsumed, onFirstUserMessage }) {
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
-  const [pendingUpdate, setPendingUpdate] = useState(null);
+  const [pendingActions, setPendingActions] = useState([]);
   const [pendingPhoto, setPendingPhoto] = useState(null); // { dataUrl, base64, caption }
   const [regeneratingId, setRegeneratingId] = useState(null);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
+  const inputRef = useRef(null);
 
-  async function confirmPendingUpdate() {
-    if (!pendingUpdate) return;
-    if (pendingUpdate.type === "add") await applyPlantAdd(pendingUpdate.fields);
-    else if (pendingUpdate.type === "add_tool") await applyToolAdd(pendingUpdate.fields);
-    else if (pendingUpdate.type === "remove_tool") await applyToolRemove(pendingUpdate.tool);
-    else await applyPlantUpdate(pendingUpdate.plant, pendingUpdate.fields);
-    setPendingUpdate(null);
-  }
+  // "Ask Sprout" buttons elsewhere in the app land here with a prefilled
+  // question about a specific plant/tool/topic.
+  useEffect(() => {
+    if (draft) {
+      setInput(draft);
+      onDraftConsumed();
+      inputRef.current?.focus();
+    }
+  }, [draft]);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -28,6 +30,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
     if (!text || busy) return;
     setInput("");
     setError("");
+    if (messages.length === 0) onFirstUserMessage(text);
     const userMsg = { chatId, role: "user", kind: "text", text, createdAt: Date.now() };
     userMsg.id = await addMessage(userMsg);
     const nextHistory = [...messages, userMsg];
@@ -37,11 +40,11 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
       const data = await apiFetch("/api/chat", {
         messages: await buildContextMessages(nextHistory, "chat"),
       });
-      const { cleanText, action } = extractPlantUpdate(data.reply || "");
+      const { cleanText, actions } = extractActions(data.reply || "");
       const aiMsg = { chatId, role: "assistant", kind: "text", text: cleanText, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
-      if (action) await handlePlantAction(action, setPendingUpdate);
+      await handleAiActions(actions, setPendingActions);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -57,11 +60,11 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
     setError("");
     try {
       const data = await apiFetch("/api/chat", { messages: await buildContextMessages(historyUpTo, "chat") });
-      const { cleanText, action } = extractPlantUpdate(data.reply || "");
+      const { cleanText, actions } = extractActions(data.reply || "");
       const updated = { ...msg, text: cleanText };
       await updateMessage(updated);
       setMessages((prev) => prev.map((m) => (m.id === msg.id ? updated : m)));
-      if (action) await handlePlantAction(action, setPendingUpdate);
+      await handleAiActions(actions, setPendingActions);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -98,14 +101,18 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
       userMsg.id = await addMessage(userMsg);
       setMessages((prev) => [...prev, userMsg]);
 
+      // The vision prompt includes the user's plant list + write-back
+      // conventions, so a photo can update a plant's record just like text can.
       const data = await apiFetch("/api/vision", {
         imageBase64: base64,
         mimeType: "image/jpeg",
-        prompt: caption || "Identify this plant, assess its health from the photo, and give concrete gardening care advice.",
+        prompt: await buildChatVisionPrompt(caption || "What's going on with this plant?"),
       });
-      const aiMsg = { chatId, role: "assistant", kind: "text", text: data.reply, createdAt: Date.now() };
+      const { cleanText, actions } = extractActions(data.reply || "");
+      const aiMsg = { chatId, role: "assistant", kind: "text", text: cleanText, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
+      await handleAiActions(actions, setPendingActions);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -117,7 +124,11 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
     <div className="tab-panel chat-tab">
       <div className="messages">
         {messages.length === 0 && (
-          <p className="empty-hint">Ask a gardening question or snap a photo of a plant to get started.</p>
+          <div className="empty-state">
+            <i className="bi bi-flower1"></i>
+            <p>Ask a gardening question or snap a photo of a plant to get started.</p>
+            <p className="empty-sub">Sprout knows your garden — try "what should I do today?"</p>
+          </div>
         )}
         {messages.map((m) => (
           <MessageBubble
@@ -127,28 +138,17 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
             regenerating={regeneratingId === m.id}
           />
         ))}
-        {busy && <div className="bubble assistant typing">…</div>}
+        {busy && (
+          <div className="bubble assistant typing">
+            <span className="typing-dot"></span>
+            <span className="typing-dot"></span>
+            <span className="typing-dot"></span>
+          </div>
+        )}
         <div ref={scrollRef} />
       </div>
       {error && <div className="error-banner">{error}</div>}
-      {pendingUpdate && (
-        <div className="confirm-banner">
-          <span>
-            {pendingUpdate.type === "add" &&
-              `Add plant "${pendingUpdate.fields.name || "New plant"}"?`}
-            {pendingUpdate.type === "add_tool" &&
-              `Add "${pendingUpdate.fields.name || "New item"}" (x${pendingUpdate.fields.quantity || 1}) to inventory?`}
-            {pendingUpdate.type === "remove_tool" &&
-              `Remove "${pendingUpdate.tool.name}" from inventory?`}
-            {pendingUpdate.type === "update" &&
-              `Update "${pendingUpdate.plant.name}": ${Object.entries(pendingUpdate.fields).map(([k, v]) => `${k} → ${v}`).join(", ")}?`}
-          </span>
-          <div className="confirm-actions">
-            <button className="btn small" onClick={confirmPendingUpdate}>Apply</button>
-            <button className="btn btn-ghost small" onClick={() => setPendingUpdate(null)}>Dismiss</button>
-          </div>
-        </div>
-      )}
+      <PendingActionsBanner actions={pendingActions} onResolve={setPendingActions} />
       {pendingPhoto && (
         <div className="photo-preview">
           <img src={pendingPhoto.dataUrl} alt="" />
@@ -182,6 +182,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
           onChange={onPhotoChosen}
         />
         <input
+          ref={inputRef}
           className="text-input"
           type="text"
           placeholder="Ask Sprout something…"
@@ -190,8 +191,8 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy }) {
           onKeyDown={(e) => e.key === "Enter" && sendText()}
           disabled={busy}
         />
-        <button className="btn" onClick={sendText} disabled={busy || !input.trim()}>
-          Send
+        <button className="btn btn-send" onClick={sendText} disabled={busy || !input.trim()} title="Send">
+          <i className="bi bi-send-fill"></i>
         </button>
       </div>
     </div>

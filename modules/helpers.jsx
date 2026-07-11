@@ -11,7 +11,7 @@ const LS_ACTIVE_CHAT = "gc_activeChatId";
 const LS_AI_WRITE_MODE = "gc_aiWriteMode"; // 'auto' | 'confirm'
 const LS_THEME = "gc_theme"; // 'dark' | 'light'
 const LS_DEFAULT_LOCATION = "gc_defaultLocation";
-const CONTEXT_LIMIT = 12; // how many past messages get sent back to the AI as context
+const CONTEXT_LIMIT = 16; // how many past messages get sent back to the AI as context
 
 function getAiWriteMode() {
   return localStorage.getItem(LS_AI_WRITE_MODE) || "auto";
@@ -33,7 +33,43 @@ const SYSTEM_PROMPT_BASE =
   "confidently, and search for or reference a trusted source (university extension " +
   "services, RHS, Missouri Botanical Garden, etc.) when you can.";
 
-// ---------- helpers ----------
+// ---------- small formatting helpers ----------
+
+// Relative-time label for chips and logs: "today", "yesterday", "5 days ago".
+function timeAgo(ts) {
+  if (!ts) return "never";
+  const days = daysSince(ts);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+function daysSince(ts) {
+  if (!ts) return null;
+  return Math.floor((Date.now() - ts) / (24 * 60 * 60 * 1000));
+}
+
+// First user message → chat title ("What's wrong with my basil…").
+function autoTitleFromText(text) {
+  const clean = (text || "").replace(/\s+/g, " ").trim();
+  if (clean.length <= 38) return clean;
+  return clean.slice(0, 38).replace(/\s+\S*$/, "") + "…";
+}
+
+// Markdown/symbols make TTS read garbage ("asterisk asterisk"). Strip to
+// plain speakable text before handing anything to speechSynthesis.
+function stripForSpeech(text) {
+  return (text || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[*_~>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 // Renders AI reply text as markdown when it looks like markdown (bold,
 // lists, headers, links), sanitized before ever touching the DOM. Falls
@@ -44,7 +80,7 @@ function renderMarkdownSafe(text) {
   try {
     if (window.marked && window.DOMPurify) {
       const html = window.marked.parse(text, { breaks: true });
-      return window.DOMPurify.sanitize(html);
+      return window.DOMPurify.sanitize(html, { ADD_ATTR: ["target", "rel"] });
     }
   } catch (_) {
     // fall through to plain text below
@@ -108,6 +144,8 @@ async function apiFetch(path, body) {
   return data;
 }
 
+// ---------- AI context ----------
+
 // Read-only snapshot of tools/routines/plants, injected into the system
 // prompt so the AI knows the user's current garden state without needing
 // any tool-calling machinery just to read data.
@@ -133,7 +171,8 @@ async function buildKnowledgeContext() {
           .map((r) => {
             const status = isRoutineDue(r) ? "DUE" : "not due";
             const last = r.lastDone ? new Date(r.lastDone).toLocaleDateString() : "never";
-            return `${r.task} (every ${r.intervalDays}d, last done ${last}, ${status})`;
+            const link = r.plantId ? `, linked to plant id:${r.plantId}${r.careAction ? ` (${r.careAction})` : ""}` : "";
+            return `id:${r.id} "${r.task}" (every ${r.intervalDays}d, last done ${last}, ${status}${link})`;
           })
           .join("; ")
     );
@@ -154,9 +193,33 @@ async function buildKnowledgeContext() {
     );
   }
 
-  if (!parts.length) return "";
+  if (!parts.length) return "\n\nThe user's garden data (plants, tools, routines) is currently empty.";
   return "\n\nCurrent garden data (for your reference):\n" + parts.join("\n");
 }
+
+// The write-back conventions are ALWAYS included (previously they were only
+// sent once the user had data, which meant the AI could never add the FIRST
+// plant/tool via chat).
+const ACTION_CONVENTIONS =
+  "\n\nYou can change the app's data by ending your reply with one or more hidden " +
+  "machine-readable action lines. The user never sees these lines — never mention or " +
+  "explain them in your visible reply. Each action goes on its own line at the VERY END " +
+  "of your reply, with its JSON on a single line:\n" +
+  'ADD_PLANT: {"fields": {"name": "...", "location": "...", "plantingDate": "YYYY-MM-DD", "notes": "..."}}\n' +
+  'UPDATE_PLANT: {"id": <plant id>, "fields": {"lastWatered": "YYYY-MM-DD", "lastFertilized": "YYYY-MM-DD", "name": "...", "location": "...", "notes": "..."}}\n' +
+  'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "notes": "..."}}\n' +
+  'UPDATE_TOOL: {"id": <tool id>, "fields": {"quantity": 2, "notes": "..."}}\n' +
+  'REMOVE_TOOL: {"id": <tool id>}\n' +
+  'ADD_ROUTINE: {"fields": {"task": "...", "intervalDays": 3, "plantId": <plant id>, "careAction": "water"}}\n' +
+  'UPDATE_ROUTINE: {"id": <routine id>, "fields": {"task": "...", "intervalDays": 5}}\n' +
+  'COMPLETE_ROUTINE: {"id": <routine id>}\n' +
+  "Rules: use real ids from the garden data above; only include fields that actually change; " +
+  'omit "location" on ADD_PLANT if the user didn\'t say where it is (their default is used); ' +
+  'on ADD_ROUTINE, "plantId" and "careAction" ("water" or "fertilize") are optional — set them ' +
+  "when the routine cares for one specific plant, so completing it also updates that plant. " +
+  "When the user says they watered/fertilized a plant, use UPDATE_PLANT with today's date, and " +
+  "also COMPLETE_ROUTINE if a matching routine exists. Only emit actions for real changes the " +
+  "user stated or clearly asked for — never invent one, and don't repeat an action already applied.";
 
 // Builds the text-only context array the chat model sees, from stored history.
 async function buildContextMessages(history, mode) {
@@ -164,26 +227,12 @@ async function buildContextMessages(history, mode) {
   const knowledge = await buildKnowledgeContext();
   const sys =
     SYSTEM_PROMPT_BASE +
+    ` Today's date is ${new Date().toDateString()}.` +
     (mode === "call"
-      ? " The user is talking to you by voice on a phone call — keep replies short (1-3 sentences), conversational, and easy to read aloud."
+      ? " The user is talking to you by voice on a phone call — keep replies short (1-3 sentences), conversational, and easy to read aloud. Never use markdown, bullet points, or emoji."
       : "") +
     knowledge +
-    (knowledge
-      ? "\n\nYou can propose changes to the garden data by ending your reply with ONE hidden " +
-        "machine-readable line (never mention or explain it — it is not part of your visible reply). " +
-        "Only ever include ONE such line, choosing whichever single change is most relevant:\n" +
-        '- To update an existing plant (e.g. they watered it, fertilized it, or shared a new ' +
-        'observation): UPDATE_PLANT: {"id": <plant id>, "fields": {"lastWatered": "2026-01-01", "notes": "..."}}\n' +
-        '- To add a brand new plant the user mentions that isn\'t in the list above: ADD_PLANT: ' +
-        '{"fields": {"name": "...", "location": "...", "plantingDate": "...", "notes": "..."}} ' +
-        '— omit "location" entirely if the user didn\'t say where it is, a default will be used.\n' +
-        '- To add a tool, pesticide, fertilizer, or other supply the user says they bought/have: ' +
-        'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "notes": "..."}}\n' +
-        '- To remove or use up a tool/supply the user says they got rid of, used up, or lost ' +
-        '(match it against the Tools/supplies list above by id): REMOVE_TOOL: {"id": <tool id>}\n' +
-        "Use today's date for lastWatered/lastFertilized, only include fields that should change, " +
-        "and only add a line when a genuine change is warranted."
-      : "");
+    ACTION_CONVENTIONS;
   const msgs = [{ role: "system", content: sys }];
   for (const m of recent) {
     if (m.kind === "image") {
@@ -201,25 +250,72 @@ async function buildContextMessages(history, mode) {
   return msgs;
 }
 
-// Pulls a trailing hidden action line (ADD_PLANT/UPDATE_PLANT/ADD_TOOL/
-// REMOVE_TOOL: {...}) out of an AI reply, if present.
+// Prompt for photos sent from the CHAT tab (the Garden detail page builds its
+// own, pinned to a specific plant id). Gives the vision model the same garden
+// awareness + write-back powers as the chat model.
+async function buildChatVisionPrompt(caption) {
+  const plants = await getAllPlants();
+  const plantList = plants.length
+    ? "The user's plants: " +
+      plants.map((p) => `id:${p.id} "${p.name}" (${p.location || "unknown location"})`).join(", ") +
+      ". "
+    : "The user has no plants saved yet. ";
+  return (
+    "You are Sprout, a friendly gardening companion analyzing a photo for a home gardener. " +
+    `Today's date is ${new Date().toDateString()}. ` +
+    plantList +
+    "Identify the plant, assess its health from the photo, and give concrete care advice. " +
+    `The user's question about this photo: "${caption}". ` +
+    "If the photo clearly shows one of the user's saved plants and its record should change, " +
+    'you may end your reply with ONE line, JSON on a single line, formatted exactly as ' +
+    'UPDATE_PLANT: {"id": <plant id>, "fields": {"notes": "..."}} — or ADD_PLANT: {"fields": {...}} ' +
+    "if they clearly want this new plant tracked. Never mention that line in your visible reply; " +
+    "skip it entirely when not genuinely warranted."
+  );
+}
+
+// ---------- AI action extraction ----------
+
+// Pulls ALL trailing hidden action lines off an AI reply (each `VERB: {json}`
+// on its own line at the end of the text). Returns the cleaned visible text
+// plus the parsed actions in the order the model wrote them.
 const ACTION_TYPE_MAP = {
   ADD_PLANT: "add",
   UPDATE_PLANT: "update",
   ADD_TOOL: "add_tool",
+  UPDATE_TOOL: "update_tool",
   REMOVE_TOOL: "remove_tool",
+  ADD_ROUTINE: "add_routine",
+  UPDATE_ROUTINE: "update_routine",
+  COMPLETE_ROUTINE: "complete_routine",
 };
-function extractPlantUpdate(text) {
-  const match = text.match(/(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|REMOVE_TOOL):\s*(\{[\s\S]*\})\s*$/);
-  if (!match) return { cleanText: text, action: null };
-  try {
-    const payload = JSON.parse(match[2]);
-    const cleanText = text.slice(0, match.index).trim();
-    return { cleanText, action: { type: ACTION_TYPE_MAP[match[1]], ...payload } };
-  } catch (_) {
-    return { cleanText: text, action: null };
+const ACTION_LINE_RE =
+  /(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE):\s*(\{[^\n]*\})\s*$/;
+
+function extractActions(text) {
+  let cleanText = (text || "").trimEnd();
+  const actions = [];
+  for (let guard = 0; guard < 8; guard++) {
+    const match = cleanText.match(ACTION_LINE_RE);
+    if (!match) break;
+    try {
+      const payload = JSON.parse(match[2]);
+      actions.unshift({ type: ACTION_TYPE_MAP[match[1]], ...payload });
+    } catch (_) {
+      break; // malformed JSON — leave the rest of the text alone
+    }
+    cleanText = cleanText.slice(0, match.index).trimEnd();
   }
+  return { cleanText: cleanText.trim(), actions };
 }
+
+// Back-compat single-action wrapper (kept in case any older code path calls it).
+function extractPlantUpdate(text) {
+  const { cleanText, actions } = extractActions(text);
+  return { cleanText, action: actions[0] || null };
+}
+
+// ---------- resolving + applying actions ----------
 
 async function resolvePlantTarget(action) {
   const plants = await getAllPlants();
@@ -231,6 +327,34 @@ async function resolvePlantTarget(action) {
     const lower = action.name.toLowerCase();
     const byName = plants.find((p) => (p.name || "").toLowerCase().includes(lower));
     if (byName) return byName;
+  }
+  return null;
+}
+
+async function resolveToolTarget(action) {
+  const tools = await getAllTools();
+  if (action.id != null) {
+    const byId = tools.find((t) => t.id === action.id);
+    if (byId) return byId;
+  }
+  if (action.name) {
+    const lower = action.name.toLowerCase();
+    const byName = tools.find((t) => (t.name || "").toLowerCase().includes(lower));
+    if (byName) return byName;
+  }
+  return null;
+}
+
+async function resolveRoutineTarget(action) {
+  const routines = await getAllRoutines();
+  if (action.id != null) {
+    const byId = routines.find((r) => r.id === action.id);
+    if (byId) return byId;
+  }
+  if (action.task || action.name) {
+    const lower = (action.task || action.name).toLowerCase();
+    const byTask = routines.find((r) => (r.task || "").toLowerCase().includes(lower));
+    if (byTask) return byTask;
   }
   return null;
 }
@@ -250,6 +374,8 @@ async function applyPlantUpdate(plant, fields) {
     .map(([k, v]) => `${k} → ${v}`)
     .join(", ");
   let updated = { ...plant, ...fields };
+  if (fields.lastWatered) updated.lastWatered = Date.parse(fields.lastWatered) || Date.now();
+  if (fields.lastFertilized) updated.lastFertilized = Date.parse(fields.lastFertilized) || Date.now();
   if (changeSummary) updated = withLogEntry(updated, changeSummary, "note");
   await updatePlant(updated);
 }
@@ -265,20 +391,6 @@ async function applyPlantAdd(fields) {
   });
 }
 
-async function resolveToolTarget(action) {
-  const tools = await getAllTools();
-  if (action.id != null) {
-    const byId = tools.find((t) => t.id === action.id);
-    if (byId) return byId;
-  }
-  if (action.name) {
-    const lower = action.name.toLowerCase();
-    const byName = tools.find((t) => (t.name || "").toLowerCase().includes(lower));
-    if (byName) return byName;
-  }
-  return null;
-}
-
 async function applyToolAdd(fields) {
   await addTool({
     name: fields.name || "New item",
@@ -287,36 +399,148 @@ async function applyToolAdd(fields) {
   });
 }
 
+async function applyToolUpdate(tool, fields) {
+  const updated = { ...tool, ...fields };
+  if (fields.quantity != null) updated.quantity = Math.max(0, Number(fields.quantity) || 0);
+  await updateTool(updated);
+}
+
 async function applyToolRemove(tool) {
   await deleteTool(tool.id);
 }
 
-// Shared by Chat/Call: resolves + applies (or queues for confirmation) an
-// ADD_PLANT/UPDATE_PLANT/ADD_TOOL/REMOVE_TOOL action extracted from an AI reply.
-async function handlePlantAction(action, setPendingUpdate) {
-  if (!action) return;
-  const confirmMode = getAiWriteMode() === "confirm";
+async function applyRoutineAdd(fields) {
+  await addRoutine({
+    task: fields.task || "New routine",
+    intervalDays: Math.max(1, Number(fields.intervalDays) || 1),
+    plantId: fields.plantId != null ? Number(fields.plantId) : null,
+    careAction: fields.careAction === "water" || fields.careAction === "fertilize" ? fields.careAction : "",
+  });
+}
 
-  if (action.type === "add") {
-    if (confirmMode) setPendingUpdate({ type: "add", fields: action.fields || {} });
-    else await applyPlantAdd(action.fields || {});
-    return;
-  }
-  if (action.type === "add_tool") {
-    if (confirmMode) setPendingUpdate({ type: "add_tool", fields: action.fields || {} });
-    else await applyToolAdd(action.fields || {});
-    return;
-  }
-  if (action.type === "remove_tool") {
-    const tool = await resolveToolTarget(action);
-    if (!tool) return;
-    if (confirmMode) setPendingUpdate({ type: "remove_tool", tool });
-    else await applyToolRemove(tool);
-    return;
-  }
+async function applyRoutineUpdate(routine, fields) {
+  const updated = { ...routine, ...fields };
+  if (fields.intervalDays != null) updated.intervalDays = Math.max(1, Number(fields.intervalDays) || 1);
+  await updateRoutine(updated);
+}
 
-  const plant = await resolvePlantTarget(action);
+// Marking a routine done is the bridge between Routines and Garden: when the
+// routine is linked to a plant with a careAction, the plant's lastWatered/
+// lastFertilized is stamped and a log entry lands in its history too.
+async function completeRoutine(routine) {
+  await updateRoutine({ ...routine, lastDone: Date.now() });
+  if (!routine.plantId || !routine.careAction) return;
+  const plants = await getAllPlants();
+  const plant = plants.find((p) => p.id === routine.plantId);
   if (!plant) return;
-  if (confirmMode) setPendingUpdate({ type: "update", plant, fields: action.fields || {} });
-  else await applyPlantUpdate(plant, action.fields || {});
+  if (routine.careAction === "water") {
+    await updatePlant(withLogEntry({ ...plant, lastWatered: Date.now() }, `Watered (routine: ${routine.task})`, "water"));
+  } else if (routine.careAction === "fertilize") {
+    await updatePlant(withLogEntry({ ...plant, lastFertilized: Date.now() }, `Fertilized (routine: ${routine.task})`, "fertilize"));
+  }
+}
+
+// Turns a raw extracted action into a resolved, describable, applicable one.
+// Returns null when the target no longer exists (stale id from the model).
+async function resolveAction(action) {
+  switch (action.type) {
+    case "add":
+      return { type: "add_plant", fields: action.fields || {} };
+    case "add_tool":
+      return { type: "add_tool", fields: action.fields || {} };
+    case "add_routine":
+      return { type: "add_routine", fields: action.fields || {} };
+    case "update": {
+      const plant = await resolvePlantTarget(action);
+      return plant ? { type: "update_plant", plant, fields: action.fields || {} } : null;
+    }
+    case "update_tool": {
+      const tool = await resolveToolTarget(action);
+      return tool ? { type: "update_tool", tool, fields: action.fields || {} } : null;
+    }
+    case "remove_tool": {
+      const tool = await resolveToolTarget(action);
+      return tool ? { type: "remove_tool", tool } : null;
+    }
+    case "update_routine": {
+      const routine = await resolveRoutineTarget(action);
+      return routine ? { type: "update_routine", routine, fields: action.fields || {} } : null;
+    }
+    case "complete_routine": {
+      const routine = await resolveRoutineTarget(action);
+      return routine ? { type: "complete_routine", routine } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+function describeAction(a) {
+  const fieldsText = (fields) =>
+    Object.entries(fields || {})
+      .map(([k, v]) => `${k} → ${v}`)
+      .join(", ");
+  switch (a.type) {
+    case "add_plant":
+      return `Add plant "${a.fields.name || "New plant"}"`;
+    case "update_plant":
+      return `Update "${a.plant.name}": ${fieldsText(a.fields)}`;
+    case "add_tool":
+      return `Add "${a.fields.name || "New item"}" (x${a.fields.quantity || 1}) to inventory`;
+    case "update_tool":
+      return `Update "${a.tool.name}": ${fieldsText(a.fields)}`;
+    case "remove_tool":
+      return `Remove "${a.tool.name}" from inventory`;
+    case "add_routine":
+      return `Add routine "${a.fields.task || "New routine"}" (every ${a.fields.intervalDays || 1}d)`;
+    case "update_routine":
+      return `Update routine "${a.routine.task}": ${fieldsText(a.fields)}`;
+    case "complete_routine":
+      return `Mark routine "${a.routine.task}" done`;
+    default:
+      return "Unknown change";
+  }
+}
+
+async function applyResolvedAction(a) {
+  switch (a.type) {
+    case "add_plant":
+      return applyPlantAdd(a.fields);
+    case "update_plant":
+      return applyPlantUpdate(a.plant, a.fields);
+    case "add_tool":
+      return applyToolAdd(a.fields);
+    case "update_tool":
+      return applyToolUpdate(a.tool, a.fields);
+    case "remove_tool":
+      return applyToolRemove(a.tool);
+    case "add_routine":
+      return applyRoutineAdd(a.fields);
+    case "update_routine":
+      return applyRoutineUpdate(a.routine, a.fields);
+    case "complete_routine":
+      return completeRoutine(a.routine);
+  }
+}
+
+// Shared by Chat/Call/Garden: resolves every action pulled from an AI reply,
+// then either applies them immediately (auto mode) or queues them for the
+// user to confirm. Pass setPendingActions=null where there's no confirm UI
+// (voice calls) — confirm mode then skips writes entirely, as before.
+async function handleAiActions(actions, setPendingActions) {
+  if (!actions || !actions.length) return;
+  const confirmMode = getAiWriteMode() === "confirm";
+  const resolved = [];
+  for (const action of actions) {
+    const r = await resolveAction(action);
+    if (r) resolved.push(r);
+  }
+  if (!resolved.length) return;
+  if (confirmMode) {
+    if (setPendingActions) setPendingActions((prev) => [...(prev || []), ...resolved]);
+    return;
+  }
+  for (const r of resolved) {
+    await applyResolvedAction(r);
+  }
 }

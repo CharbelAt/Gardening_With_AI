@@ -1,12 +1,13 @@
 // Minimal IndexedDB wrapper — this IS the app's "memory". Everything here stays
 // on this device/browser only (no server-side sync).
 const DB_NAME = "garden-companion";
-const DB_VERSION = 3;
+const DB_VERSION = 4; // v4 adds the saved-codex-entries store
 const STORE_MESSAGES = "messages";
 const STORE_TOOLS = "tools";
 const STORE_ROUTINES = "routines";
 const STORE_PLANTS = "plants";
 const STORE_CHATS = "chats";
+const STORE_CODEX = "codex";
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -27,6 +28,9 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains(STORE_CHATS)) {
         db.createObjectStore(STORE_CHATS, { keyPath: "id", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains(STORE_CODEX)) {
+        db.createObjectStore(STORE_CODEX, { keyPath: "id", autoIncrement: true });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -184,9 +188,26 @@ function updateTool(tool) {
   return putRecord(STORE_TOOLS, tool);
 }
 
+// ---------- saved codex entries (AI deep-search results the user kept) ----------
+
+// entry: { title, body, sources: [url], createdAt }
+function addCodexEntry(entry) {
+  return addRecord(STORE_CODEX, { ...entry, createdAt: Date.now() });
+}
+function getAllCodexEntries() {
+  return getAllRecords(STORE_CODEX);
+}
+function deleteCodexEntry(id) {
+  return deleteRecord(STORE_CODEX, id);
+}
+
 // ---------- routines (recurring care tasks) ----------
 
-// routine: { task, intervalDays, lastDone: timestamp|null, createdAt }
+// routine: { task, intervalDays, lastDone: timestamp|null, createdAt,
+//            plantId?: number|null, careAction?: ''|'water'|'fertilize' }
+// plantId/careAction link a routine to a plant: marking the routine done also
+// stamps that plant's lastWatered/lastFertilized and appends to its history log
+// (see completeRoutine in modules/helpers.jsx).
 function addRoutine(routine) {
   return addRecord(STORE_ROUTINES, { ...routine, lastDone: null, createdAt: Date.now() });
 }

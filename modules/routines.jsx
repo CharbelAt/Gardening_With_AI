@@ -1,13 +1,57 @@
 // Routines module: recurring care tasks as a card grid (due tasks badged),
-// each with its own detail page.
+// each with its own detail page. A routine can be linked to a plant with a
+// care action ("water"/"fertilize") — marking it done then also stamps that
+// plant's record and history log (see completeRoutine in helpers.jsx).
+
+// Shared by the add + edit modals: pick a plant and what completing the
+// routine does to it.
+function RoutinePlantLink({ plants, plantId, careAction, onChange }) {
+  return (
+    <React.Fragment>
+      <label>
+        Linked plant (optional)
+        <select
+          value={plantId == null ? "" : String(plantId)}
+          onChange={(e) => onChange({ plantId: e.target.value ? Number(e.target.value) : null, careAction })}
+        >
+          <option value="">None</option>
+          {plants.map((p) => (
+            <option key={p.id} value={String(p.id)}>{p.name || `Plant #${p.id}`}</option>
+          ))}
+        </select>
+      </label>
+      {plantId != null && (
+        <label>
+          When marked done
+          <select value={careAction || ""} onChange={(e) => onChange({ plantId, careAction: e.target.value })}>
+            <option value="">Just log the routine</option>
+            <option value="water">Also mark plant watered</option>
+            <option value="fertilize">Also mark plant fertilized</option>
+          </select>
+        </label>
+      )}
+    </React.Fragment>
+  );
+}
 
 function AddRoutineModal({ onClose, onAdded }) {
   const [task, setTask] = useState("");
   const [intervalDays, setIntervalDays] = useState(3);
+  const [plants, setPlants] = useState([]);
+  const [link, setLink] = useState({ plantId: null, careAction: "" });
+
+  useEffect(() => {
+    getAllPlants().then(setPlants);
+  }, []);
 
   async function save() {
     if (!task.trim()) return;
-    await addRoutine({ task: task.trim(), intervalDays: Number(intervalDays) || 1 });
+    await addRoutine({
+      task: task.trim(),
+      intervalDays: Number(intervalDays) || 1,
+      plantId: link.plantId,
+      careAction: link.plantId != null ? link.careAction : "",
+    });
     onAdded();
   }
 
@@ -23,6 +67,7 @@ function AddRoutineModal({ onClose, onAdded }) {
           Repeat every (days)
           <input type="number" min="1" value={intervalDays} onChange={(e) => setIntervalDays(e.target.value)} />
         </label>
+        <RoutinePlantLink plants={plants} plantId={link.plantId} careAction={link.careAction} onChange={setLink} />
         <div className="modal-actions">
           <button className="btn" onClick={save}>Add</button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -32,23 +77,37 @@ function AddRoutineModal({ onClose, onAdded }) {
   );
 }
 
-function RoutineDetail({ routine, onBack, onChanged }) {
+function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [plants, setPlants] = useState([]);
   const [form, setForm] = useState({
     task: routine.task || "",
     intervalDays: routine.intervalDays || 1,
+    plantId: routine.plantId != null ? routine.plantId : null,
+    careAction: routine.careAction || "",
   });
 
+  useEffect(() => {
+    getAllPlants().then(setPlants);
+  }, []);
+
   const due = isRoutineDue(routine);
+  const linkedPlant = plants.find((p) => p.id === routine.plantId) || null;
 
   async function markDone() {
-    await updateRoutine({ ...routine, lastDone: Date.now() });
+    await completeRoutine(routine);
     onChanged();
   }
 
   async function saveForm() {
-    await updateRoutine({ ...routine, ...form, intervalDays: Number(form.intervalDays) || 1 });
+    await updateRoutine({
+      ...routine,
+      task: form.task,
+      intervalDays: Number(form.intervalDays) || 1,
+      plantId: form.plantId,
+      careAction: form.plantId != null ? form.careAction : "",
+    });
     setEditing(false);
     onChanged();
   }
@@ -65,18 +124,34 @@ function RoutineDetail({ routine, onBack, onChanged }) {
       <div className="view-header">
         <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
         <h2>{routine.task || "Untitled routine"}</h2>
-        <button className="icon-btn" onClick={() => setEditing(true)}><i className="bi bi-pencil"></i></button>
+        <button className="icon-btn" onClick={() => setEditing(true)} title="Edit"><i className="bi bi-pencil"></i></button>
       </div>
 
       <div className="item-detail">
-        <div className="item-facts">
-          <div><i className="bi bi-arrow-repeat"></i> every {routine.intervalDays} day{routine.intervalDays === 1 ? "" : "s"}</div>
-          <div><i className="bi bi-check2-circle"></i> {routine.lastDone ? `last done ${new Date(routine.lastDone).toLocaleDateString()}` : "never done"}</div>
-          {due && <div className="item-notes"><i className="bi bi-exclamation-circle"></i> Due now</div>}
+        <div className="fact-chips">
+          <span className="chip"><i className="bi bi-arrow-repeat"></i> every {routine.intervalDays} day{routine.intervalDays === 1 ? "" : "s"}</span>
+          <span className="chip"><i className="bi bi-check2-circle"></i> {routine.lastDone ? `done ${timeAgo(routine.lastDone)}` : "never done"}</span>
+          {due && <span className="chip due"><i className="bi bi-exclamation-circle"></i> Due now</span>}
         </div>
 
+        {linkedPlant && (
+          <div className="linked-section">
+            <h3>Linked plant</h3>
+            <button className="linked-row" onClick={() => onNavigate("garden", { itemId: linkedPlant.id })}>
+              <i className="bi bi-flower3"></i>
+              <span>{linkedPlant.name}</span>
+              {routine.careAction && (
+                <span className="linked-sub">
+                  marks {routine.careAction === "water" ? "watered" : "fertilized"} when done
+                </span>
+              )}
+              <i className="bi bi-chevron-right"></i>
+            </button>
+          </div>
+        )}
+
         <div className="item-quick-actions">
-          <button className="btn small" onClick={markDone}>Mark done</button>
+          <button className="btn small" onClick={markDone}><i className="bi bi-check2"></i> Mark done</button>
           <button className="btn btn-danger small" onClick={() => setConfirmDelete(true)}>Delete</button>
         </div>
       </div>
@@ -103,6 +178,12 @@ function RoutineDetail({ routine, onBack, onChanged }) {
               Repeat every (days)
               <input type="number" min="1" value={form.intervalDays} onChange={(e) => setForm({ ...form, intervalDays: e.target.value })} />
             </label>
+            <RoutinePlantLink
+              plants={plants}
+              plantId={form.plantId}
+              careAction={form.careAction}
+              onChange={(link) => setForm({ ...form, ...link })}
+            />
             <div className="modal-actions">
               <button className="btn" onClick={saveForm}>Save</button>
               <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
@@ -114,9 +195,9 @@ function RoutineDetail({ routine, onBack, onChanged }) {
   );
 }
 
-function RoutinesView({ onBack }) {
+function RoutinesView({ initialId, onNavigate }) {
   const [routines, setRoutines] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(initialId || null);
   const [showAdd, setShowAdd] = useState(false);
 
   async function refresh() {
@@ -129,25 +210,38 @@ function RoutinesView({ onBack }) {
   const selected = routines.find((r) => r.id === selectedId) || null;
 
   if (selected) {
-    return <RoutineDetail routine={selected} onBack={() => setSelectedId(null)} onChanged={refresh} />;
+    return (
+      <RoutineDetail
+        routine={selected}
+        onBack={() => setSelectedId(null)}
+        onChanged={refresh}
+        onNavigate={onNavigate}
+      />
+    );
   }
 
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
-        <h2>Routines</h2>
-        <button className="icon-btn" onClick={() => setShowAdd(true)}><i className="bi bi-plus-lg"></i></button>
+        <h2><i className="bi bi-arrow-repeat"></i> Routines</h2>
+        <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add routine"><i className="bi bi-plus-lg"></i></button>
       </div>
       <div className="item-grid">
-        {routines.length === 0 && <p className="empty-hint">No routines yet — tap + to add a recurring task.</p>}
+        {routines.length === 0 && (
+          <div className="empty-state">
+            <i className="bi bi-arrow-repeat"></i>
+            <p>No routines yet — tap + to add a recurring task, or ask Sprout to set one up.</p>
+          </div>
+        )}
         {routines.map((r) => {
           const due = isRoutineDue(r);
           return (
             <button key={r.id} className={due ? "item-card due" : "item-card"} onClick={() => setSelectedId(r.id)}>
               <div className="item-card-placeholder"><i className="bi bi-arrow-repeat"></i></div>
-              <span>{r.task || "Untitled routine"}</span>
-              <span className="item-card-sub">every {r.intervalDays}d</span>
+              <span className="item-card-title">{r.task || "Untitled routine"}</span>
+              <span className="item-card-sub">
+                every {r.intervalDays}d · {r.lastDone ? timeAgo(r.lastDone) : "never done"}
+              </span>
               {due && <span className="item-card-badge">Due</span>}
             </button>
           );

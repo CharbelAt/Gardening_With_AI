@@ -1,6 +1,8 @@
 // Garden module: plants as a card grid, each with its own detail page,
 // photo-based AI analysis, and a chronological history log (photos,
 // waterings, fertilizings, and AI-driven notes all share the same log).
+// Cross-module links: "Ask Sprout" jumps to chat with a prefilled question,
+// and routines linked to a plant are listed on its detail page.
 
 function AddPlantModal({ onClose, onAdded }) {
   const [name, setName] = useState("");
@@ -43,12 +45,14 @@ function AddPlantModal({ onClose, onAdded }) {
   );
 }
 
-function PlantDetail({ plant, onBack, onChanged }) {
+function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [pendingUpdate, setPendingUpdate] = useState(null);
+  const [pendingActions, setPendingActions] = useState([]);
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [linkedRoutines, setLinkedRoutines] = useState([]);
+  const [lightbox, setLightbox] = useState(null); // { src, caption }
   const [form, setForm] = useState({
     name: plant.name || "",
     location: plant.location || "",
@@ -56,6 +60,15 @@ function PlantDetail({ plant, onBack, onChanged }) {
     notes: plant.notes || "",
   });
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      const routines = await getAllRoutines();
+      setLinkedRoutines(routines.filter((r) => r.plantId === plant.id));
+    })();
+  }, [plant.id]);
+
+  const latestPhoto = (plant.photoHistory || []).filter((p) => p.imageThumb).slice(-1)[0];
 
   async function saveForm() {
     await updatePlant({ ...plant, ...form });
@@ -79,6 +92,12 @@ function PlantDetail({ plant, onBack, onChanged }) {
     onChanged();
   }
 
+  function askSprout() {
+    onNavigate("chat", {
+      draft: `About my plant "${plant.name}"${plant.location ? ` (${plant.location})` : ""}: `,
+    });
+  }
+
   async function onPhotoChosen(e) {
     const file = e.target.files[0];
     e.target.value = "";
@@ -91,13 +110,14 @@ function PlantDetail({ plant, onBack, onChanged }) {
       const prompt =
         `You are analyzing a photo of the user's plant "${plant.name}" ` +
         `(location: ${plant.location || "unknown"}, planted: ${plant.plantingDate || "unknown"}, ` +
-        `current notes: ${plant.notes || "none"}). Identify visible health issues and give care advice. ` +
+        `current notes: ${plant.notes || "none"}). Today's date is ${new Date().toDateString()}. ` +
+        `Identify visible health issues and give care advice. ` +
         `If this photo suggests an update to this plant's record, end your reply with a new line formatted ` +
-        `EXACTLY as: UPDATE_PLANT: {"id": ${plant.id}, "fields": {"notes": "..."}} — only include fields that ` +
+        `EXACTLY as (JSON on a single line): UPDATE_PLANT: {"id": ${plant.id}, "fields": {"notes": "..."}} — only include fields that ` +
         `should change, and only add this line if genuinely warranted. Never mention this line in your visible reply.`;
 
       const data = await apiFetch("/api/vision", { imageBase64: base64, mimeType: "image/jpeg", prompt });
-      const { cleanText, action } = extractPlantUpdate(data.reply || "");
+      const { cleanText, actions } = extractActions(data.reply || "");
 
       const updatedPlant = {
         ...plant,
@@ -111,10 +131,11 @@ function PlantDetail({ plant, onBack, onChanged }) {
 
       // Photo analysis for an existing plant should only ever propose an
       // update to THIS plant, not add a new one — force id-based targeting.
-      if (action && action.type === "update") {
+      const updates = actions.filter((a) => a.type === "update");
+      for (const action of updates) {
         const fields = action.fields || {};
         if (getAiWriteMode() === "confirm") {
-          setPendingUpdate({ plant: updatedPlant, fields });
+          setPendingActions((prev) => [...prev, { type: "update_plant", plant: updatedPlant, fields }]);
         } else {
           await applyPlantUpdate(updatedPlant, fields);
           onChanged();
@@ -127,37 +148,44 @@ function PlantDetail({ plant, onBack, onChanged }) {
     }
   }
 
-  async function confirmPendingUpdate() {
-    if (!pendingUpdate) return;
-    await applyPlantUpdate(pendingUpdate.plant, pendingUpdate.fields);
-    setPendingUpdate(null);
-    onChanged();
-  }
+  const facts = [
+    { icon: "bi-geo-alt", label: plant.location || "no location set" },
+    { icon: "bi-calendar3", label: `planted ${plant.plantingDate || "unknown"}` },
+    { icon: "bi-droplet", label: `watered ${timeAgo(plant.lastWatered)}` },
+    { icon: "bi-flower2", label: `fertilized ${timeAgo(plant.lastFertilized)}` },
+  ];
 
   return (
     <div className="tab-panel">
       <div className="view-header">
         <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
         <h2>{plant.name || "Unnamed plant"}</h2>
-        <button className="icon-btn" onClick={() => setEditing(true)}><i className="bi bi-pencil"></i></button>
+        <button className="icon-btn" onClick={() => setEditing(true)} title="Edit"><i className="bi bi-pencil"></i></button>
       </div>
 
       <div className="item-detail">
-        <div className="item-facts">
-          <div><i className="bi bi-geo-alt"></i> {plant.location || "no location set"}</div>
-          <div><i className="bi bi-calendar3"></i> planted {plant.plantingDate || "unknown"}</div>
-          <div><i className="bi bi-droplet"></i> watered {plant.lastWatered ? new Date(plant.lastWatered).toLocaleDateString() : "never"}</div>
-          <div><i className="bi bi-flower2"></i> fertilized {plant.lastFertilized ? new Date(plant.lastFertilized).toLocaleDateString() : "never"}</div>
-          {plant.notes && <div className="item-notes"><i className="bi bi-journal-text"></i> {plant.notes}</div>}
+        {latestPhoto ? (
+          <button className="detail-hero" onClick={() => setLightbox({ src: latestPhoto.imageThumb, caption: latestPhoto.analysis })}>
+            <img src={latestPhoto.imageThumb} alt={plant.name} />
+          </button>
+        ) : (
+          <div className="detail-hero placeholder"><i className="bi bi-flower3"></i></div>
+        )}
+
+        <div className="fact-chips">
+          {facts.map((f, i) => (
+            <span key={i} className="chip"><i className={`bi ${f.icon}`}></i> {f.label}</span>
+          ))}
         </div>
+        {plant.notes && <div className="item-notes"><i className="bi bi-journal-text"></i> {plant.notes}</div>}
 
         <div className="item-quick-actions">
-          <button className="btn small" onClick={markWatered}>Mark watered</button>
-          <button className="btn small" onClick={markFertilized}>Mark fertilized</button>
+          <button className="btn small" onClick={markWatered}><i className="bi bi-droplet"></i> Watered</button>
+          <button className="btn small" onClick={markFertilized}><i className="bi bi-flower2"></i> Fertilized</button>
           <button className="btn small" onClick={() => fileInputRef.current.click()} disabled={busy}>
             <i className="bi bi-camera"></i> {busy ? "Analyzing…" : "Add photo"}
           </button>
-          <button className="btn btn-danger small" onClick={() => setConfirmDelete(true)}>Delete plant</button>
+          <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots"></i> Ask Sprout</button>
         </div>
         <input
           ref={fileInputRef}
@@ -169,15 +197,26 @@ function PlantDetail({ plant, onBack, onChanged }) {
         />
 
         {error && <div className="error-banner">{error}</div>}
-        {pendingUpdate && (
-          <div className="confirm-banner">
-            <span>
-              Update record: {Object.entries(pendingUpdate.fields).map(([k, v]) => `${k} → ${v}`).join(", ")}?
-            </span>
-            <div className="confirm-actions">
-              <button className="btn small" onClick={confirmPendingUpdate}>Apply</button>
-              <button className="btn btn-ghost small" onClick={() => setPendingUpdate(null)}>Dismiss</button>
-            </div>
+        <PendingActionsBanner
+          actions={pendingActions}
+          onResolve={(next) => {
+            setPendingActions(next);
+            onChanged();
+          }}
+        />
+
+        {linkedRoutines.length > 0 && (
+          <div className="linked-section">
+            <h3>Care routines</h3>
+            {linkedRoutines.map((r) => (
+              <button key={r.id} className="linked-row" onClick={() => onNavigate("routines", { itemId: r.id })}>
+                <i className="bi bi-arrow-repeat"></i>
+                <span>{r.task}</span>
+                <span className="linked-sub">every {r.intervalDays}d</span>
+                {isRoutineDue(r) && <span className="item-card-badge inline">Due</span>}
+                <i className="bi bi-chevron-right"></i>
+              </button>
+            ))}
           </div>
         )}
 
@@ -191,10 +230,16 @@ function PlantDetail({ plant, onBack, onChanged }) {
             .reverse()
             .map((p, i) => (
               <div key={i} className="log-item">
-                {p.imageThumb && <img src={p.imageThumb} alt="" />}
+                {p.imageThumb && (
+                  <img
+                    src={p.imageThumb}
+                    alt=""
+                    onClick={() => setLightbox({ src: p.imageThumb, caption: p.analysis })}
+                  />
+                )}
                 <div>
                   <div className="log-date">
-                    {new Date(p.date).toLocaleDateString()} <span className="log-kind">{p.kind || "photo"}</span>
+                    {new Date(p.date).toLocaleDateString()} <span className={`log-kind ${p.kind || "photo"}`}>{p.kind || "photo"}</span>
                   </div>
                   <div className="log-text">{p.analysis}</div>
                 </div>
@@ -202,6 +247,10 @@ function PlantDetail({ plant, onBack, onChanged }) {
             ))}
         </div>
       </div>
+
+      {lightbox && (
+        <ImageLightbox src={lightbox.src} caption={lightbox.caption} onClose={() => setLightbox(null)} />
+      )}
 
       {confirmDelete && (
         <ConfirmModal
@@ -235,12 +284,16 @@ function PlantDetail({ plant, onBack, onChanged }) {
             </label>
             <label>
               Notes
-              <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+              <textarea rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
             </label>
             <div className="modal-actions">
               <button className="btn" onClick={saveForm}>Save</button>
               <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
             </div>
+            <hr />
+            <button className="btn btn-danger" onClick={() => { setEditing(false); setConfirmDelete(true); }}>
+              Delete plant
+            </button>
           </div>
         </div>
       )}
@@ -248,9 +301,9 @@ function PlantDetail({ plant, onBack, onChanged }) {
   );
 }
 
-function GardenView({ onBack }) {
+function GardenView({ initialId, onNavigate }) {
   const [plants, setPlants] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(initialId || null);
   const [showAdd, setShowAdd] = useState(false);
 
   async function refresh() {
@@ -263,29 +316,46 @@ function GardenView({ onBack }) {
   const selected = plants.find((p) => p.id === selectedId) || null;
 
   if (selected) {
-    return <PlantDetail plant={selected} onBack={() => setSelectedId(null)} onChanged={refresh} />;
+    return (
+      <PlantDetail
+        plant={selected}
+        onBack={() => setSelectedId(null)}
+        onChanged={refresh}
+        onNavigate={onNavigate}
+      />
+    );
   }
 
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
-        <h2>Garden</h2>
-        <button className="icon-btn" onClick={() => setShowAdd(true)}><i className="bi bi-plus-lg"></i></button>
+        <h2><i className="bi bi-flower3"></i> Garden</h2>
+        <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add plant"><i className="bi bi-plus-lg"></i></button>
       </div>
       <div className="item-grid">
-        {plants.length === 0 && <p className="empty-hint">No plants yet — tap + to add one.</p>}
-        {plants.map((p) => (
-          <button key={p.id} className="item-card" onClick={() => setSelectedId(p.id)}>
-            {p.photoHistory && p.photoHistory.length > 0 ? (
-              <img src={p.photoHistory[p.photoHistory.length - 1].imageThumb} alt={p.name} />
-            ) : (
-              <div className="item-card-placeholder"><i className="bi bi-flower3"></i></div>
-            )}
-            <span>{p.name || "Unnamed plant"}</span>
-            {p.location && <span className="item-card-sub">{p.location}</span>}
-          </button>
-        ))}
+        {plants.length === 0 && (
+          <div className="empty-state">
+            <i className="bi bi-flower3"></i>
+            <p>No plants yet — tap + to add one, or just tell Sprout about a plant in chat.</p>
+          </div>
+        )}
+        {plants.map((p) => {
+          const lastImg = (p.photoHistory || []).filter((h) => h.imageThumb).slice(-1)[0];
+          return (
+            <button key={p.id} className="item-card" onClick={() => setSelectedId(p.id)}>
+              {lastImg ? (
+                <img src={lastImg.imageThumb} alt={p.name} />
+              ) : (
+                <div className="item-card-placeholder"><i className="bi bi-flower3"></i></div>
+              )}
+              <span className="item-card-title">{p.name || "Unnamed plant"}</span>
+              <span className="item-card-sub">
+                {p.location ? `${p.location} · ` : ""}
+                <i className="bi bi-droplet"></i> {timeAgo(p.lastWatered)}
+              </span>
+            </button>
+          );
+        })}
       </div>
       {showAdd && (
         <AddPlantModal

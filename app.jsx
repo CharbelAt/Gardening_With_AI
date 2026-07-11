@@ -2,17 +2,24 @@
 // components defined in every ./modules/*.jsx file — all sharing this page's
 // global scope, no import/export. Keeps the whole app deployable by just
 // editing files and committing to GitHub Pages (no build step).
+//
+// Navigation model: a persistent bottom bar switches the main view
+// (chat/garden/routines/inventory/codex). "call" is a sub-mode of chat,
+// entered from the phone icon in the header. Cross-module links (e.g. a
+// plant's "Ask Sprout" button, a routine's linked plant) go through
+// navigate(view, {itemId, draft}).
 
 function App() {
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [tab, setTab] = useState("chat");
-  const [view, setView] = useState(null); // null = show chat/call tabs; else 'garden'|'inventory'|'routines'|'codex'
+  const [view, setView] = useState("chat"); // chat | call | garden | inventory | routines | codex
+  const [navItemId, setNavItemId] = useState(null); // open this item's detail page on view mount
+  const [chatDraft, setChatDraft] = useState(""); // prefilled composer text from "Ask Sprout" buttons
+  const [dueCount, setDueCount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showChatList, setShowChatList] = useState(false);
-  const [showDrawer, setShowDrawer] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [theme, setTheme] = useState(getTheme());
@@ -22,14 +29,23 @@ function App() {
   useEffect(() => {
     localStorage.setItem(LS_THEME, theme);
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", theme === "dark" ? "#16391a" : "#2e7d32");
+    if (meta) meta.setAttribute("content", theme === "dark" ? "#101510" : "#2e6b34");
   }, [theme]);
 
-  function navigateFromDrawer(key) {
-    setShowDrawer(false);
-    if (key === "settings") setShowSettings(true);
-    else if (key === "help") setShowHelp(true);
-    else setView(key);
+  // Keep the "due" badge on the Routines nav item fresh — cheap IndexedDB
+  // read, refreshed whenever the user changes views.
+  async function refreshDueCount() {
+    const routines = await getAllRoutines();
+    setDueCount(routines.filter(isRoutineDue).length);
+  }
+  useEffect(() => {
+    refreshDueCount();
+  }, [view]);
+
+  function navigate(nextView, opts = {}) {
+    setNavItemId(opts.itemId != null ? opts.itemId : null);
+    if (opts.draft) setChatDraft(opts.draft);
+    setView(nextView);
   }
 
   // Initial load: run the one-time migration, figure out which chat is
@@ -64,6 +80,15 @@ function App() {
     const allChats = await getAllChats();
     setChats(allChats);
     await switchChat(id);
+  }
+
+  // Auto-name still-untitled chats after the user's first message, so the
+  // chat list reads "Yellowing basil leaves" instead of "Chat 3".
+  async function onFirstUserMessage(text) {
+    const chat = chats.find((c) => c.id === activeChatId);
+    if (!chat || !/^Chat \d+$/.test(chat.title || "")) return;
+    await updateChat({ ...chat, title: autoTitleFromText(text) });
+    setChats(await getAllChats());
   }
 
   function renameChat(chat) {
@@ -104,31 +129,65 @@ function App() {
     await switchChat(id);
   }
 
+  const activeChat = chats.find((c) => c.id === activeChatId);
+
   return (
     <div className={`app ${theme === "dark" ? "dark" : ""}`}>
       <header className="app-header">
-        <button className="icon-btn" onClick={() => setShowChatList(true)} title="Chats"><i className="bi bi-chat-dots"></i></button>
-        <span className="app-title"><i className="bi bi-flower1"></i> Garden Companion</span>
-        <button className="icon-btn" onClick={() => setShowDrawer(true)} title="Menu"><i className="bi bi-gear"></i></button>
+        <div className="header-side">
+          {view === "chat" && (
+            <button className="icon-btn" onClick={() => setShowChatList(true)} title="Chats">
+              <i className="bi bi-chat-square-text"></i>
+            </button>
+          )}
+          {view === "call" && (
+            <button className="icon-btn" onClick={() => setView("chat")} title="Back to chat">
+              <i className="bi bi-arrow-left"></i>
+            </button>
+          )}
+        </div>
+        <span className="app-title">
+          <i className="bi bi-flower1"></i>
+          <span>
+            Garden Companion
+            {view === "chat" && activeChat && <em className="app-subtitle">{activeChat.title}</em>}
+          </span>
+        </span>
+        <div className="header-side right">
+          {view === "chat" && (
+            <button className="icon-btn" onClick={() => setView("call")} title="Voice call">
+              <i className="bi bi-telephone"></i>
+            </button>
+          )}
+          <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
+            <i className="bi bi-gear"></i>
+          </button>
+        </div>
       </header>
 
-      {view === null && (
-        <nav className="tabs">
-          <button className={tab === "chat" ? "tab active" : "tab"} onClick={() => setTab("chat")}>Chat</button>
-          <button className={tab === "call" ? "tab active" : "tab"} onClick={() => setTab("call")}>Call</button>
-        </nav>
-      )}
+      <main className="app-main">
+        {loaded && view === "chat" && (
+          <ChatTab
+            chatId={activeChatId}
+            messages={messages}
+            setMessages={setMessages}
+            busy={busy}
+            setBusy={setBusy}
+            draft={chatDraft}
+            onDraftConsumed={() => setChatDraft("")}
+            onFirstUserMessage={onFirstUserMessage}
+          />
+        )}
+        {loaded && view === "call" && (
+          <CallTab chatId={activeChatId} messages={messages} setMessages={setMessages} />
+        )}
+        {view === "garden" && <GardenView initialId={navItemId} onNavigate={navigate} />}
+        {view === "inventory" && <InventoryView initialId={navItemId} onNavigate={navigate} />}
+        {view === "routines" && <RoutinesView initialId={navItemId} onNavigate={navigate} />}
+        {view === "codex" && <CodexView onNavigate={navigate} />}
+      </main>
 
-      {view === null && loaded && tab === "chat" && (
-        <ChatTab chatId={activeChatId} messages={messages} setMessages={setMessages} busy={busy} setBusy={setBusy} />
-      )}
-      {view === null && loaded && tab === "call" && (
-        <CallTab chatId={activeChatId} messages={messages} setMessages={setMessages} />
-      )}
-      {view === "garden" && <GardenView onBack={() => setView(null)} />}
-      {view === "inventory" && <InventoryView onBack={() => setView(null)} />}
-      {view === "routines" && <RoutinesView onBack={() => setView(null)} />}
-      {view === "codex" && <CodexView onBack={() => setView(null)} />}
+      <BottomNav view={view} onNavigate={navigate} dueCount={dueCount} />
 
       {showChatList && (
         <ChatListModal
@@ -142,16 +201,16 @@ function App() {
         />
       )}
 
-      {showDrawer && (
-        <SideDrawer onClose={() => setShowDrawer(false)} onNavigate={navigateFromDrawer} />
-      )}
-
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
 
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}
           onCleared={onMemoryCleared}
+          onShowHelp={() => {
+            setShowSettings(false);
+            setShowHelp(true);
+          }}
           theme={theme}
           onThemeChange={setTheme}
         />
