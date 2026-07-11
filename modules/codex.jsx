@@ -1,7 +1,10 @@
-// Codex module: a static quick-reference library, plus an AI-backed
-// in-depth search (with cited sources) for anything not in the static list.
-// Good AI results can be saved into the user's own library (IndexedDB), so
-// the codex grows with use.
+// Codex module: the garden's knowledge library. Three kinds of content:
+// 1. A small static quick-reference list (CODEX_ENTRIES).
+// 2. Auto-researched entries — every plant/tool added to the app gets a
+//    background AI research pass with sources (ensureCodexResearch in
+//    helpers.jsx) and lands here automatically.
+// 3. Manual AI deep-search results the user chose to save.
+// Item detail pages link here via their "Codex" button (prefilled search).
 
 const CODEX_ENTRIES = [
   { title: "Tomatoes", body: "6-8 hours direct sun. Water deeply and consistently — irregular watering causes blossom end rot. Stake or cage for support. Feed every 2-3 weeks once fruiting starts." },
@@ -21,20 +24,6 @@ const CODEX_ENTRIES = [
   { title: "Soil pH basics", body: "Most vegetables prefer slightly acidic to neutral soil (6.0-7.0). Acid-lovers (blueberries, azaleas) want lower pH (~5.0-5.5). Test with a cheap soil pH kit before amending." },
 ];
 
-// Pulls a trailing "SOURCES: url1, url2" line off an AI codex reply.
-function extractSources(text) {
-  const match = text.match(/SOURCES:\s*(.+)\s*$/i);
-  if (!match) return { body: text.trim(), sources: [] };
-  const body = text.slice(0, match.index).trim();
-  const raw = match[1].trim();
-  if (!raw || /^none$/i.test(raw)) return { body, sources: [] };
-  const sources = raw
-    .split(/[,|]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return { body, sources };
-}
-
 function CodexSources({ sources }) {
   if (!sources || sources.length === 0) return null;
   return (
@@ -50,8 +39,19 @@ function CodexSources({ sources }) {
   );
 }
 
-function CodexView({ onNavigate }) {
-  const [query, setQuery] = useState("");
+function CodexKindBadge({ entry }) {
+  if (!entry.kind || entry.kind === "topic") return null;
+  const icon = entry.kind === "plant" ? "bi-flower3" : "bi-tools";
+  return (
+    <span className="codex-kind">
+      <i className={`bi ${icon}`}></i> {entry.kind}
+      {entry.auto ? " · auto" : ""}
+    </span>
+  );
+}
+
+function CodexView({ initialQuery, onNavigate }) {
+  const [query, setQuery] = useState(initialQuery || "");
   const [saved, setSaved] = useState([]);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
@@ -59,7 +59,8 @@ function CodexView({ onNavigate }) {
   const [deleteTarget, setDeleteTarget] = useState(null);
 
   async function refreshSaved() {
-    setSaved(await getAllCodexEntries());
+    const all = await getAllCodexEntries();
+    setSaved(all.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))); // newest first
   }
   useEffect(() => {
     refreshSaved();
@@ -81,15 +82,7 @@ function CodexView({ onNavigate }) {
     try {
       const data = await apiFetch("/api/chat", {
         messages: [
-          {
-            role: "system",
-            content:
-              "You are a gardening reference-library assistant. Given a plant, pest, disease, or " +
-              "gardening topic, write a concise but in-depth reference entry (4-8 sentences) covering " +
-              "identification, care, or treatment as relevant, using trusted gardening sources. After " +
-              "the entry, on its own final line, output exactly: SOURCES: <1-3 real source URLs, comma " +
-              "separated> — or SOURCES: none if you're not confident of a real source. Never omit that line.",
-          },
+          { role: "system", content: CODEX_RESEARCH_SYSTEM },
           { role: "user", content: term },
         ],
       });
@@ -104,7 +97,13 @@ function CodexView({ onNavigate }) {
 
   async function saveResult() {
     if (!aiResult || aiResult.savedId) return;
-    const id = await addCodexEntry({ title: aiResult.term, body: aiResult.body, sources: aiResult.sources });
+    const id = await addCodexEntry({
+      title: aiResult.term,
+      body: aiResult.body,
+      sources: aiResult.sources,
+      kind: "topic",
+      itemName: aiResult.term,
+    });
     setAiResult({ ...aiResult, savedId: id });
     refreshSaved();
   }
@@ -157,10 +156,12 @@ function CodexView({ onNavigate }) {
           </div>
         )}
 
-        {filteredSaved.length > 0 && <h3 className="codex-section-title">Your saved entries</h3>}
+        {filteredSaved.length > 0 && <h3 className="codex-section-title">Your library</h3>}
         {filteredSaved.map((e) => (
           <div key={`saved-${e.id}`} className="codex-entry">
-            <h3>{e.title}</h3>
+            <h3>
+              {e.title} <CodexKindBadge entry={e} />
+            </h3>
             <div dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(e.body) }} />
             <CodexSources sources={e.sources} />
             <div className="codex-entry-actions">

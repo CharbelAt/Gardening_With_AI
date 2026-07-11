@@ -174,7 +174,7 @@ function clearAllMessages() {
 
 // ---------- tools (inventory) ----------
 
-// tool: { name, quantity, notes, createdAt }
+// tool: { name, quantity, notes, tags: [string], createdAt }
 function addTool(tool) {
   return addRecord(STORE_TOOLS, { ...tool, createdAt: Date.now() });
 }
@@ -190,7 +190,10 @@ function updateTool(tool) {
 
 // ---------- saved codex entries (AI deep-search results the user kept) ----------
 
-// entry: { title, body, sources: [url], createdAt }
+// entry: { title, body, sources: [url], createdAt,
+//          kind?: 'plant'|'tool'|'topic', itemName?: string, auto?: boolean }
+// kind/itemName/auto are set by ensureCodexResearch (helpers.jsx), which
+// auto-researches every newly added plant/tool into a codex entry.
 function addCodexEntry(entry) {
   return addRecord(STORE_CODEX, { ...entry, createdAt: Date.now() });
 }
@@ -204,7 +207,7 @@ function deleteCodexEntry(id) {
 // ---------- routines (recurring care tasks) ----------
 
 // routine: { task, intervalDays, lastDone: timestamp|null, createdAt,
-//            plantId?: number|null, careAction?: ''|'water'|'fertilize' }
+//            plantId?: number|null, careAction?: ''|'water'|'fertilize', tags: [string] }
 // plantId/careAction link a routine to a plant: marking the routine done also
 // stamps that plant's lastWatered/lastFertilized and appends to its history log
 // (see completeRoutine in modules/helpers.jsx).
@@ -229,7 +232,7 @@ function isRoutineDue(routine) {
 // ---------- plants ----------
 
 // plant: { name, notes, plantingDate, location, lastWatered, lastFertilized,
-//          photoHistory: [{ imageThumb?, analysis, date, kind }], createdAt }
+//          tags: [string], photoHistory: [{ imageThumb?, analysis, date, kind }], createdAt }
 function addPlant(plant) {
   return addRecord(STORE_PLANTS, {
     name: plant.name || "",
@@ -238,6 +241,7 @@ function addPlant(plant) {
     location: plant.location || "",
     lastWatered: plant.lastWatered || null,
     lastFertilized: plant.lastFertilized || null,
+    tags: plant.tags || [],
     photoHistory: [],
     createdAt: Date.now(),
   });

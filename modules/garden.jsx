@@ -9,10 +9,12 @@ function AddPlantModal({ onClose, onAdded }) {
   const [location, setLocation] = useState("");
   const [plantingDate, setPlantingDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [tags, setTags] = useState([]);
 
   async function save() {
     if (!name.trim()) return;
-    await addPlant({ name: name.trim(), location, plantingDate, notes });
+    await addPlant({ name: name.trim(), location, plantingDate, notes, tags: normTags(tags) });
+    ensureCodexResearch("plant", name.trim()); // background codex entry with sources
     onAdded();
   }
 
@@ -36,6 +38,7 @@ function AddPlantModal({ onClose, onAdded }) {
           Notes
           <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
         </label>
+        <TagPicker presets={PRESET_TAGS.plants} tags={tags} onChange={setTags} />
         <div className="modal-actions">
           <button className="btn" onClick={save}>Add</button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -58,6 +61,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
     location: plant.location || "",
     plantingDate: plant.plantingDate || "",
     notes: plant.notes || "",
+    tags: plant.tags || [],
   });
   const fileInputRef = useRef(null);
 
@@ -71,7 +75,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   const latestPhoto = (plant.photoHistory || []).filter((p) => p.imageThumb).slice(-1)[0];
 
   async function saveForm() {
-    await updatePlant({ ...plant, ...form });
+    await updatePlant({ ...plant, ...form, tags: normTags(form.tags) });
     setEditing(false);
     onChanged();
   }
@@ -110,7 +114,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
       const prompt =
         `You are analyzing a photo of the user's plant "${plant.name}" ` +
         `(location: ${plant.location || "unknown"}, planted: ${plant.plantingDate || "unknown"}, ` +
-        `current notes: ${plant.notes || "none"}). Today's date is ${new Date().toDateString()}. ` +
+        `current notes: ${plant.notes || "none"}). The user's device says it is now: ${deviceNow()}. ` +
         `Identify visible health issues and give care advice. ` +
         `If this photo suggests an update to this plant's record, end your reply with a new line formatted ` +
         `EXACTLY as (JSON on a single line): UPDATE_PLANT: {"id": ${plant.id}, "fields": {"notes": "..."}} — only include fields that ` +
@@ -176,6 +180,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
           {facts.map((f, i) => (
             <span key={i} className="chip"><i className={`bi ${f.icon}`}></i> {f.label}</span>
           ))}
+          <TagChips tags={plant.tags} />
         </div>
         {plant.notes && <div className="item-notes"><i className="bi bi-journal-text"></i> {plant.notes}</div>}
 
@@ -186,12 +191,14 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
             <i className="bi bi-camera"></i> {busy ? "Analyzing…" : "Add photo"}
           </button>
           <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots"></i> Ask Sprout</button>
+          <button className="btn btn-ghost small" onClick={() => onNavigate("codex", { query: plant.name })}>
+            <i className="bi bi-book"></i> Codex
+          </button>
         </div>
         <input
           ref={fileInputRef}
           type="file"
           accept="image/*"
-          capture="environment"
           style={{ display: "none" }}
           onChange={onPhotoChosen}
         />
@@ -286,6 +293,11 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
               Notes
               <textarea rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
             </label>
+            <TagPicker
+              presets={PRESET_TAGS.plants}
+              tags={form.tags}
+              onChange={(tags) => setForm({ ...form, tags })}
+            />
             <div className="modal-actions">
               <button className="btn" onClick={saveForm}>Save</button>
               <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
@@ -305,6 +317,7 @@ function GardenView({ initialId, onNavigate }) {
   const [plants, setPlants] = useState([]);
   const [selectedId, setSelectedId] = useState(initialId || null);
   const [showAdd, setShowAdd] = useState(false);
+  const [activeTag, setActiveTag] = useState(null);
 
   async function refresh() {
     setPlants(await getAllPlants());
@@ -314,6 +327,7 @@ function GardenView({ initialId, onNavigate }) {
   }, []);
 
   const selected = plants.find((p) => p.id === selectedId) || null;
+  const visible = activeTag ? plants.filter((p) => (p.tags || []).includes(activeTag)) : plants;
 
   if (selected) {
     return (
@@ -332,6 +346,7 @@ function GardenView({ initialId, onNavigate }) {
         <h2><i className="bi bi-flower3"></i> Garden</h2>
         <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add plant"><i className="bi bi-plus-lg"></i></button>
       </div>
+      <TagFilterBar items={plants} activeTag={activeTag} onSelect={setActiveTag} />
       <div className="item-grid">
         {plants.length === 0 && (
           <div className="empty-state">
@@ -339,7 +354,10 @@ function GardenView({ initialId, onNavigate }) {
             <p>No plants yet — tap + to add one, or just tell Sprout about a plant in chat.</p>
           </div>
         )}
-        {plants.map((p) => {
+        {visible.length === 0 && plants.length > 0 && (
+          <p className="empty-hint">No plants tagged "{activeTag}".</p>
+        )}
+        {visible.map((p) => {
           const lastImg = (p.photoHistory || []).filter((h) => h.imageThumb).slice(-1)[0];
           return (
             <button key={p.id} className="item-card" onClick={() => setSelectedId(p.id)}>

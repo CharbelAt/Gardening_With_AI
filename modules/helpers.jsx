@@ -13,6 +13,26 @@ const LS_THEME = "gc_theme"; // 'dark' | 'light'
 const LS_DEFAULT_LOCATION = "gc_defaultLocation";
 const CONTEXT_LIMIT = 16; // how many past messages get sent back to the AI as context
 
+// Predefined tag sets per module. Users can also type any custom tag, and the
+// AI can both use these and invent new ones (kept short + lowercase).
+const PRESET_TAGS = {
+  plants: ["vegetable", "fruit", "herb", "flower", "indoor", "outdoor", "succulent", "tree"],
+  tools: ["hand tool", "power tool", "fertilizer", "pesticide", "seeds", "soil", "watering", "consumable"],
+  routines: ["watering", "fertilizing", "pruning", "pest control", "cleaning", "harvest"],
+};
+
+// Normalizes a tags value coming from the AI or a form into a clean,
+// deduplicated array of short lowercase strings.
+function normTags(tags) {
+  if (!Array.isArray(tags)) return [];
+  const out = [];
+  for (const t of tags) {
+    const clean = String(t || "").trim().toLowerCase().slice(0, 24);
+    if (clean && !out.includes(clean)) out.push(clean);
+  }
+  return out.slice(0, 8);
+}
+
 function getAiWriteMode() {
   return localStorage.getItem(LS_AI_WRITE_MODE) || "auto";
 }
@@ -34,6 +54,30 @@ const SYSTEM_PROMPT_BASE =
   "services, RHS, Missouri Botanical Garden, etc.) when you can.";
 
 // ---------- small formatting helpers ----------
+
+// The device's current date AND time (plus timezone), for AI prompts — models
+// don't know either on their own, and "water it this evening" style advice
+// needs the time of day, not just the date.
+function deviceNow() {
+  const d = new Date();
+  const tz = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch (_) {
+      return "";
+    }
+  })();
+  return (
+    d.toLocaleString(undefined, {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }) + (tz ? ` (${tz})` : "")
+  );
+}
 
 // Relative-time label for chips and logs: "today", "yesterday", "5 days ago".
 function timeAgo(ts) {
@@ -144,7 +188,65 @@ async function apiFetch(path, body) {
   return data;
 }
 
+// ---------- codex research (auto-logging of new items) ----------
+
+// Pulls a trailing "SOURCES: url1, url2" line off an AI reference reply.
+// (Lives here, not codex.jsx, because auto-research below needs it too.)
+function extractSources(text) {
+  const match = text.match(/SOURCES:\s*(.+)\s*$/i);
+  if (!match) return { body: text.trim(), sources: [] };
+  const body = text.slice(0, match.index).trim();
+  const raw = match[1].trim();
+  if (!raw || /^none$/i.test(raw)) return { body, sources: [] };
+  const sources = raw
+    .split(/[,|]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return { body, sources };
+}
+
+const CODEX_RESEARCH_SYSTEM =
+  "You are a gardening reference-library assistant. Write an in-depth, factual reference " +
+  "entry (8-14 sentences) about the given subject, using trusted sources (university " +
+  "extension services, RHS, botanical gardens, manufacturer documentation). " +
+  "For a PLANT: scientific/botanical name and family, growth habit, light/water/soil/" +
+  "temperature needs, feeding, common pests and diseases, propagation, and any toxicity " +
+  "to humans or pets. For a TOOL or SUPPLY: what it is, what it's used for, how and when " +
+  "to use it correctly, active ingredients or materials where relevant, safety precautions, " +
+  "and storage/maintenance. Use markdown sparingly (bold key terms). After the entry, on " +
+  "its own final line, output exactly: SOURCES: <1-3 real source URLs, comma separated> — " +
+  "or SOURCES: none if you're not confident of a real source. Never omit that line.";
+
+// Every new plant/tool automatically gets a researched codex entry (with
+// sources) so the codex accumulates real knowledge about what the user owns.
+// Fire-and-forget: never blocks or breaks the add itself; skips duplicates.
+async function ensureCodexResearch(kind, name) {
+  const clean = (name || "").trim();
+  if (!clean) return;
+  try {
+    const existing = await getAllCodexEntries();
+    const norm = clean.toLowerCase();
+    if (existing.some((e) => (e.itemName || e.title || "").trim().toLowerCase() === norm)) return;
+    const data = await apiFetch("/api/chat", {
+      messages: [
+        { role: "system", content: CODEX_RESEARCH_SYSTEM },
+        { role: "user", content: `${kind === "plant" ? "Plant" : "Tool/supply"}: ${clean}` },
+      ],
+    });
+    const { body, sources } = extractSources(data.reply || "");
+    if (!body) return;
+    await addCodexEntry({ title: clean, body, sources, kind, itemName: clean, auto: true });
+  } catch (e) {
+    console.error("codex auto-research failed:", e.message);
+  }
+}
+
 // ---------- AI context ----------
+
+function tagsLabel(item) {
+  const tags = item.tags || [];
+  return tags.length ? ` [tags: ${tags.join(", ")}]` : "";
+}
 
 // Read-only snapshot of tools/routines/plants, injected into the system
 // prompt so the AI knows the user's current garden state without needing
@@ -160,7 +262,8 @@ async function buildKnowledgeContext() {
 
   if (tools.length) {
     parts.push(
-      "Tools/supplies: " + tools.map((t) => `id:${t.id} "${t.name}" x${t.quantity}`).join(", ")
+      "Tools/supplies: " +
+        tools.map((t) => `id:${t.id} "${t.name}" x${t.quantity}${tagsLabel(t)}`).join(", ")
     );
   }
 
@@ -172,7 +275,7 @@ async function buildKnowledgeContext() {
             const status = isRoutineDue(r) ? "DUE" : "not due";
             const last = r.lastDone ? new Date(r.lastDone).toLocaleDateString() : "never";
             const link = r.plantId ? `, linked to plant id:${r.plantId}${r.careAction ? ` (${r.careAction})` : ""}` : "";
-            return `id:${r.id} "${r.task}" (every ${r.intervalDays}d, last done ${last}, ${status}${link})`;
+            return `id:${r.id} "${r.task}" (every ${r.intervalDays}d, last done ${last}, ${status}${link})${tagsLabel(r)}`;
           })
           .join("; ")
     );
@@ -187,7 +290,7 @@ async function buildKnowledgeContext() {
             const f = p.lastFertilized ? new Date(p.lastFertilized).toLocaleDateString() : "never";
             return `- id:${p.id} "${p.name}" | location: ${p.location || "unknown"} | planted: ${
               p.plantingDate || "unknown"
-            } | last watered: ${w} | last fertilized: ${f} | notes: ${p.notes || "none"}`;
+            } | last watered: ${w} | last fertilized: ${f}${tagsLabel(p)} | notes: ${p.notes || "none"}`;
           })
           .join("\n")
     );
@@ -205,18 +308,25 @@ const ACTION_CONVENTIONS =
   "machine-readable action lines. The user never sees these lines — never mention or " +
   "explain them in your visible reply. Each action goes on its own line at the VERY END " +
   "of your reply, with its JSON on a single line:\n" +
-  'ADD_PLANT: {"fields": {"name": "...", "location": "...", "plantingDate": "YYYY-MM-DD", "notes": "..."}}\n' +
-  'UPDATE_PLANT: {"id": <plant id>, "fields": {"lastWatered": "YYYY-MM-DD", "lastFertilized": "YYYY-MM-DD", "name": "...", "location": "...", "notes": "..."}}\n' +
-  'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "notes": "..."}}\n' +
-  'UPDATE_TOOL: {"id": <tool id>, "fields": {"quantity": 2, "notes": "..."}}\n' +
+  'ADD_PLANT: {"fields": {"name": "...", "location": "...", "plantingDate": "YYYY-MM-DD", "notes": "...", "tags": ["..."]}}\n' +
+  'UPDATE_PLANT: {"id": <plant id>, "fields": {"lastWatered": "YYYY-MM-DD", "lastFertilized": "YYYY-MM-DD", "name": "...", "location": "...", "notes": "...", "tags": ["..."]}}\n' +
+  'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "notes": "...", "tags": ["..."]}}\n' +
+  'UPDATE_TOOL: {"id": <tool id>, "fields": {"quantity": 2, "notes": "...", "tags": ["..."]}}\n' +
   'REMOVE_TOOL: {"id": <tool id>}\n' +
-  'ADD_ROUTINE: {"fields": {"task": "...", "intervalDays": 3, "plantId": <plant id>, "careAction": "water"}}\n' +
-  'UPDATE_ROUTINE: {"id": <routine id>, "fields": {"task": "...", "intervalDays": 5}}\n' +
+  'ADD_ROUTINE: {"fields": {"task": "...", "intervalDays": 3, "plantId": <plant id>, "careAction": "water", "tags": ["..."]}}\n' +
+  'UPDATE_ROUTINE: {"id": <routine id>, "fields": {"task": "...", "intervalDays": 5, "tags": ["..."]}}\n' +
   'COMPLETE_ROUTINE: {"id": <routine id>}\n' +
   "Rules: use real ids from the garden data above; only include fields that actually change; " +
   'omit "location" on ADD_PLANT if the user didn\'t say where it is (their default is used); ' +
   'on ADD_ROUTINE, "plantId" and "careAction" ("water" or "fertilize") are optional — set them ' +
   "when the routine cares for one specific plant, so completing it also updates that plant. " +
+  '"tags" is optional everywhere: prefer these presets — plants: ' +
+  PRESET_TAGS.plants.join("/") +
+  "; tools: " +
+  PRESET_TAGS.tools.join("/") +
+  "; routines: " +
+  PRESET_TAGS.routines.join("/") +
+  " — and only invent a new short lowercase tag when none fit. Always tag new items with 1-3 tags. " +
   "When the user says they watered/fertilized a plant, use UPDATE_PLANT with today's date, and " +
   "also COMPLETE_ROUTINE if a matching routine exists. Only emit actions for real changes the " +
   "user stated or clearly asked for — never invent one, and don't repeat an action already applied.";
@@ -227,7 +337,7 @@ async function buildContextMessages(history, mode) {
   const knowledge = await buildKnowledgeContext();
   const sys =
     SYSTEM_PROMPT_BASE +
-    ` Today's date is ${new Date().toDateString()}.` +
+    ` The user's device says it is now: ${deviceNow()}.` +
     (mode === "call"
       ? " The user is talking to you by voice on a phone call — keep replies short (1-3 sentences), conversational, and easy to read aloud. Never use markdown, bullet points, or emoji."
       : "") +
@@ -262,7 +372,7 @@ async function buildChatVisionPrompt(caption) {
     : "The user has no plants saved yet. ";
   return (
     "You are Sprout, a friendly gardening companion analyzing a photo for a home gardener. " +
-    `Today's date is ${new Date().toDateString()}. ` +
+    `The user's device says it is now: ${deviceNow()}. ` +
     plantList +
     "Identify the plant, assess its health from the photo, and give concrete care advice. " +
     `The user's question about this photo: "${caption}". ` +
@@ -371,11 +481,12 @@ function withLogEntry(plant, text, kind) {
 async function applyPlantUpdate(plant, fields) {
   const changeSummary = Object.entries(fields)
     .filter(([k]) => k !== "lastWatered" && k !== "lastFertilized")
-    .map(([k, v]) => `${k} → ${v}`)
+    .map(([k, v]) => `${k} → ${Array.isArray(v) ? v.join(", ") : v}`)
     .join(", ");
   let updated = { ...plant, ...fields };
   if (fields.lastWatered) updated.lastWatered = Date.parse(fields.lastWatered) || Date.now();
   if (fields.lastFertilized) updated.lastFertilized = Date.parse(fields.lastFertilized) || Date.now();
+  if (fields.tags) updated.tags = normTags(fields.tags);
   if (changeSummary) updated = withLogEntry(updated, changeSummary, "note");
   await updatePlant(updated);
 }
@@ -388,7 +499,9 @@ async function applyPlantAdd(fields) {
     location: fields.location || getDefaultLocation(),
     lastWatered: fields.lastWatered ? Date.parse(fields.lastWatered) || null : null,
     lastFertilized: fields.lastFertilized ? Date.parse(fields.lastFertilized) || null : null,
+    tags: normTags(fields.tags),
   });
+  ensureCodexResearch("plant", fields.name); // background — never blocks the add
 }
 
 async function applyToolAdd(fields) {
@@ -396,12 +509,15 @@ async function applyToolAdd(fields) {
     name: fields.name || "New item",
     quantity: Number(fields.quantity) || 1,
     notes: fields.notes || "",
+    tags: normTags(fields.tags),
   });
+  ensureCodexResearch("tool", fields.name); // background — never blocks the add
 }
 
 async function applyToolUpdate(tool, fields) {
   const updated = { ...tool, ...fields };
   if (fields.quantity != null) updated.quantity = Math.max(0, Number(fields.quantity) || 0);
+  if (fields.tags) updated.tags = normTags(fields.tags);
   await updateTool(updated);
 }
 
@@ -415,12 +531,14 @@ async function applyRoutineAdd(fields) {
     intervalDays: Math.max(1, Number(fields.intervalDays) || 1),
     plantId: fields.plantId != null ? Number(fields.plantId) : null,
     careAction: fields.careAction === "water" || fields.careAction === "fertilize" ? fields.careAction : "",
+    tags: normTags(fields.tags),
   });
 }
 
 async function applyRoutineUpdate(routine, fields) {
   const updated = { ...routine, ...fields };
   if (fields.intervalDays != null) updated.intervalDays = Math.max(1, Number(fields.intervalDays) || 1);
+  if (fields.tags) updated.tags = normTags(fields.tags);
   await updateRoutine(updated);
 }
 
@@ -478,7 +596,7 @@ async function resolveAction(action) {
 function describeAction(a) {
   const fieldsText = (fields) =>
     Object.entries(fields || {})
-      .map(([k, v]) => `${k} → ${v}`)
+      .map(([k, v]) => `${k} → ${Array.isArray(v) ? v.join(", ") : v}`)
       .join(", ");
   switch (a.type) {
     case "add_plant":

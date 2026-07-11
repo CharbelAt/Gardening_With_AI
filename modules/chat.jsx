@@ -1,5 +1,7 @@
-// The typed Chat tab: text + photo messages, AI action confirmations
-// (multi-action aware), and per-message regenerate/copy/read-aloud.
+// The Chat page: typed messages, photos (camera or gallery), AI action
+// confirmations (multi-action aware), per-message regenerate/copy/read-aloud,
+// and the embedded voice call (CallBar) — chat and call share one thread, so
+// the conversation doubles as the call's live transcript.
 
 function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftConsumed, onFirstUserMessage }) {
   const [input, setInput] = useState("");
@@ -7,9 +9,13 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
   const [pendingActions, setPendingActions] = useState([]);
   const [pendingPhoto, setPendingPhoto] = useState(null); // { dataUrl, base64, caption }
   const [regeneratingId, setRegeneratingId] = useState(null);
+  const [callActive, setCallActive] = useState(false);
   const fileInputRef = useRef(null);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+
+  const callSupported =
+    !!(window.SpeechRecognition || window.webkitSpeechRecognition) && "speechSynthesis" in window;
 
   // "Ask Sprout" buttons elsewhere in the app land here with a prefilled
   // question about a specific plant/tool/topic.
@@ -23,7 +29,21 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, busy]);
+  }, [messages, busy, callActive]);
+
+  // End any running call when the chat switches to another thread.
+  useEffect(() => {
+    setCallActive(false);
+  }, [chatId]);
+
+  function toggleCall() {
+    if (!callSupported) {
+      setError("Voice calls need browser speech recognition — try Chrome on Android.");
+      return;
+    }
+    setError("");
+    setCallActive((v) => !v);
+  }
 
   async function sendText() {
     const text = input.trim();
@@ -72,6 +92,8 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     }
   }
 
+  // No `capture` attribute on the file input — Android/iOS then offer the
+  // full chooser (camera OR gallery/files), so existing photos can be sent.
   function onPhotoChosen(e) {
     const file = e.target.files[0];
     e.target.value = "";
@@ -90,11 +112,13 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     setError("");
     setBusy(true);
     try {
+      const text = caption || "What's going on with this plant?";
+      if (messages.length === 0) onFirstUserMessage(text);
       const userMsg = {
         chatId,
         role: "user",
         kind: "image",
-        text: caption || "What's going on with this plant?",
+        text,
         imageThumb: dataUrl,
         createdAt: Date.now(),
       };
@@ -106,7 +130,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
       const data = await apiFetch("/api/vision", {
         imageBase64: base64,
         mimeType: "image/jpeg",
-        prompt: await buildChatVisionPrompt(caption || "What's going on with this plant?"),
+        prompt: await buildChatVisionPrompt(text),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
       const aiMsg = { chatId, role: "assistant", kind: "text", text: cleanText, createdAt: Date.now() };
@@ -126,7 +150,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         {messages.length === 0 && (
           <div className="empty-state">
             <i className="bi bi-flower1"></i>
-            <p>Ask a gardening question or snap a photo of a plant to get started.</p>
+            <p>Ask a gardening question or send a photo of a plant to get started.</p>
             <p className="empty-sub">Sprout knows your garden — try "what should I do today?"</p>
           </div>
         )}
@@ -164,10 +188,18 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           </div>
         </div>
       )}
+      {callActive && (
+        <CallBar
+          chatId={chatId}
+          messages={messages}
+          setMessages={setMessages}
+          onClose={() => setCallActive(false)}
+        />
+      )}
       <div className="composer">
         <button
           className="icon-btn"
-          title="Analyze a photo"
+          title="Send a photo (camera or gallery)"
           onClick={() => fileInputRef.current.click()}
           disabled={busy}
         >
@@ -177,7 +209,6 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           ref={fileInputRef}
           type="file"
           accept="image/*"
-          capture="environment"
           style={{ display: "none" }}
           onChange={onPhotoChosen}
         />
@@ -191,6 +222,13 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           onKeyDown={(e) => e.key === "Enter" && sendText()}
           disabled={busy}
         />
+        <button
+          className={callActive ? "icon-btn call-toggle active" : "icon-btn call-toggle"}
+          title={callActive ? "End voice call" : "Start voice call"}
+          onClick={toggleCall}
+        >
+          <i className={callActive ? "bi bi-telephone-x-fill" : "bi bi-telephone"}></i>
+        </button>
         <button className="btn btn-send" onClick={sendText} disabled={busy || !input.trim()} title="Send">
           <i className="bi bi-send-fill"></i>
         </button>

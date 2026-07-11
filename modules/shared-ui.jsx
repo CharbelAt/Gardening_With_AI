@@ -269,6 +269,96 @@ function PendingActionsBanner({ actions, onResolve }) {
   );
 }
 
+// ---------- tags ----------
+
+// Tag selector used by every add/edit modal: preset chips toggle on/off, plus
+// a free-text row for custom tags (the AI can also assign tags via actions).
+function TagPicker({ presets, tags, onChange }) {
+  const [custom, setCustom] = useState("");
+  const shown = Array.from(new Set([...(presets || []), ...(tags || [])]));
+
+  function toggle(t) {
+    onChange(tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t]);
+  }
+  function addCustom() {
+    const t = custom.trim().toLowerCase();
+    if (!t) return;
+    if (!tags.includes(t)) onChange([...tags, t]);
+    setCustom("");
+  }
+
+  return (
+    <div className="tag-picker">
+      <span className="tag-picker-label">Tags</span>
+      <div className="tag-chip-row">
+        {shown.map((t) => (
+          <button
+            type="button"
+            key={t}
+            className={tags.includes(t) ? "tag-chip active" : "tag-chip"}
+            onClick={() => toggle(t)}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      <div className="tag-picker-add">
+        <input
+          value={custom}
+          placeholder="custom tag…"
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addCustom();
+            }
+          }}
+        />
+        <button type="button" className="btn small" onClick={addCustom} disabled={!custom.trim()}>
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Horizontal filter bar above the card grids: shows every tag in use for that
+// module; tapping one filters the grid, tapping again (or "All") clears it.
+function TagFilterBar({ items, activeTag, onSelect }) {
+  const tags = Array.from(new Set(items.flatMap((i) => i.tags || []))).sort();
+  if (tags.length === 0) return null;
+  return (
+    <div className="tag-filter-bar">
+      <button className={!activeTag ? "tag-chip active" : "tag-chip"} onClick={() => onSelect(null)}>
+        All
+      </button>
+      {tags.map((t) => (
+        <button
+          key={t}
+          className={activeTag === t ? "tag-chip active" : "tag-chip"}
+          onClick={() => onSelect(activeTag === t ? null : t)}
+        >
+          {t}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Small read-only tag chips for detail pages.
+function TagChips({ tags }) {
+  if (!tags || tags.length === 0) return null;
+  return (
+    <React.Fragment>
+      {tags.map((t) => (
+        <span key={t} className="chip tag">
+          <i className="bi bi-tag"></i> {t}
+        </span>
+      ))}
+    </React.Fragment>
+  );
+}
+
 // ---------- bottom navigation ----------
 
 const NAV_ITEMS = [
@@ -280,8 +370,7 @@ const NAV_ITEMS = [
 ];
 
 function BottomNav({ view, onNavigate, dueCount }) {
-  // The Call view is entered from the Chat header; highlight Chat while in it.
-  const activeKey = view === "call" ? "chat" : view;
+  const activeKey = view;
   return (
     <nav className="bottom-nav">
       {NAV_ITEMS.map((item) => (
@@ -310,11 +399,11 @@ function HelpModal({ onClose }) {
         <h2>How to use Garden Companion</h2>
         <div className="help-content">
           <h3>Getting around</h3>
-          <p>The bar at the bottom switches between Chat, Garden, Routines, Inventory, and Codex. The phone icon in the Chat header starts a voice call; the gear opens Settings.</p>
+          <p>The bar at the bottom switches between Chat, Garden, Routines, Inventory, and Codex. The gear in the header opens Settings.</p>
           <h3>Chat</h3>
-          <p>Type gardening questions to Sprout. Tap the camera icon to analyze a photo of a plant — it'll identify it and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil".</p>
-          <h3>Call</h3>
-          <p>Tap the phone icon in the Chat header for a hands-free voice conversation. Speak, wait for the reply, then keep talking. Works best in Chrome on Android.</p>
+          <p>Type gardening questions to Sprout. Tap the camera icon to send a photo — take a new one or pick from your gallery — and it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil".</p>
+          <h3>Voice calls</h3>
+          <p>Tap the phone icon in the chat composer for a hands-free voice conversation right inside the chat — you'll see a live transcript as you speak, and everything lands in the same thread. Tap the red button to hang up. Works best in Chrome on Android.</p>
           <h3>Chats</h3>
           <p>The chat-bubbles icon in the header lets you keep separate conversation threads, rename them, or start a new one. New chats name themselves after your first message.</p>
           <h3>Garden</h3>
@@ -323,8 +412,10 @@ function HelpModal({ onClose }) {
           <p>Recurring care tasks with a "Due" badge when overdue (also shown on the bottom bar). Link a routine to a plant with a care action — marking "Water the ficus" done then updates the ficus's watering record automatically.</p>
           <h3>Inventory</h3>
           <p>Your tools and supplies as cards — tap one for details or to edit it. Telling Sprout what you bought or used up keeps this in sync too.</p>
+          <h3>Tags</h3>
+          <p>Plants, tools, and routines can all be tagged (e.g. "herb", "pesticide", "watering") — pick preset tags or type your own when adding/editing, and Sprout tags things it adds for you. Tap a tag in the bar above any grid to filter by it.</p>
           <h3>Codex</h3>
-          <p>A quick-reference library of plants, pests, and topics. If nothing matches your search, run the in-depth AI search with sources — and save good results into your own library.</p>
+          <p>Your garden's knowledge library. Every plant or tool you add gets researched automatically in the background — scientific facts, care/usage guidance, and sources appear here on their own. You can also search anything, run the in-depth AI search, and save results. Item pages have a Codex button that jumps straight to their entry.</p>
           <h3>Settings</h3>
           <p>Set your backend URL and client secret (from your VPS), choose whether AI-suggested updates apply automatically or ask first, and clear local data if needed.</p>
           <h3>Your data</h3>

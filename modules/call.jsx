@@ -1,19 +1,24 @@
-// The hands-free Call tab: browser speech recognition + speech synthesis,
-// with the stale-closure guards that keep the mic from hearing the AI's own
-// voice (see statusRef/killRecognition comments below).
+// Voice call, embedded in the Chat page as a bar above the composer. Mounting
+// CallBar starts the call; unmounting (End button, leaving the chat view)
+// stops it. Transcribed speech and AI replies land in the SAME chat thread as
+// typed messages — the chat itself is the live transcript, and the interim
+// (not-yet-final) recognition text is previewed in the bar.
+//
+// Keeps the battle-tested stale-closure guards: statusRef (not React state)
+// checked in rec.onend, killRecognition() detaching onend before abort, and a
+// 500ms pause after TTS before the mic reopens — this is what stops the mic
+// from hearing the AI's own voice.
 
-function CallTab({ chatId, messages, setMessages }) {
+function CallBar({ chatId, messages, setMessages, onClose }) {
   const SpeechRecognitionCtor =
     window.SpeechRecognition || window.webkitSpeechRecognition;
-  const supported = !!SpeechRecognitionCtor && "speechSynthesis" in window;
 
-  const [callActive, setCallActive] = useState(false);
-  const [status, setStatus] = useState("idle"); // idle | listening | thinking | speaking
+  const [status, setStatus] = useState("idle"); // listening | thinking | speaking
   const [liveTranscript, setLiveTranscript] = useState("");
   const [error, setError] = useState("");
 
   const recognitionRef = useRef(null);
-  const callActiveRef = useRef(false);
+  const activeRef = useRef(false);
   const statusRef = useRef("idle");
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -23,8 +28,6 @@ function CallTab({ chatId, messages, setMessages }) {
     setStatus(next);
   }
 
-  // Kills whatever recognizer is currently running, detaching its onend first
-  // so stopping it doesn't trigger the auto-restart logic below.
   function killRecognition() {
     if (recognitionRef.current) {
       recognitionRef.current.onend = null;
@@ -36,7 +39,7 @@ function CallTab({ chatId, messages, setMessages }) {
   }
 
   const startListening = useCallback(() => {
-    if (!callActiveRef.current) return;
+    if (!activeRef.current) return;
     killRecognition(); // never run two recognizers at once
 
     const rec = new SpeechRecognitionCtor();
@@ -63,10 +66,9 @@ function CallTab({ chatId, messages, setMessages }) {
     rec.onend = () => {
       // Only auto-restart if we're still supposed to be in the listening
       // phase (e.g. it timed out on silence). Reading statusRef here instead
-      // of the React state avoids a stale-closure bug where this handler
-      // would restart the mic during "thinking"/"speaking" and pick up the
-      // AI's own voice as new input.
-      if (callActiveRef.current && statusRef.current === "listening") {
+      // of React state avoids restarting the mic during "thinking"/"speaking"
+      // and picking up the AI's own voice as new input.
+      if (activeRef.current && statusRef.current === "listening") {
         try {
           rec.start();
         } catch (_) {}
@@ -100,13 +102,12 @@ function CallTab({ chatId, messages, setMessages }) {
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
       speak(reply);
-      // Voice calls apply updates only in auto mode — there's no good way to
-      // show a confirm prompt mid-call, so confirm-mode just skips writing
-      // (handleAiActions does exactly that when passed no pending-queue setter).
+      // Calls apply updates only in auto mode — no confirm UI mid-call
+      // (handleAiActions skips writes in confirm mode when passed null).
       await handleAiActions(actions, null);
     } catch (e) {
       setError(e.message);
-      if (callActiveRef.current) startListening();
+      if (activeRef.current) startListening();
       else updateStatus("idle");
     }
   }
@@ -120,64 +121,46 @@ function CallTab({ chatId, messages, setMessages }) {
       // Short pause lets the phone speaker's audio tail die out before the
       // mic reopens, so it doesn't hear its own reply as new input.
       setTimeout(() => {
-        if (callActiveRef.current) startListening();
+        if (activeRef.current) startListening();
         else updateStatus("idle");
       }, 500);
     };
     utter.onerror = () => {
-      if (callActiveRef.current) startListening();
+      if (activeRef.current) startListening();
     };
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utter);
   }
 
-  function startCall() {
-    setError("");
-    callActiveRef.current = true;
-    setCallActive(true);
+  // Mount = call starts; unmount = full cleanup (mic off, TTS cancelled).
+  useEffect(() => {
+    activeRef.current = true;
     startListening();
-  }
-
-  function endCall() {
-    callActiveRef.current = false;
-    setCallActive(false);
-    updateStatus("idle");
-    setLiveTranscript("");
-    killRecognition();
-    window.speechSynthesis.cancel();
-  }
-
-  useEffect(() => () => endCall(), []); // stop everything if the tab unmounts
-
-  if (!supported) {
-    return (
-      <div className="tab-panel call-tab">
-        <p className="empty-hint">
-          Voice calls need browser speech recognition, which isn't available here.
-          Try Chrome on Android.
-        </p>
-      </div>
-    );
-  }
+    return () => {
+      activeRef.current = false;
+      killRecognition();
+      window.speechSynthesis.cancel();
+    };
+  }, []);
 
   const statusLabel = {
-    idle: "Tap to start a call",
+    idle: "Connecting…",
     listening: "Listening…",
     thinking: "Thinking…",
     speaking: "Speaking…",
   }[status];
 
   return (
-    <div className="tab-panel call-tab">
-      <div className={`call-orb ${status}`} />
-      <p className="call-status">{statusLabel}</p>
-      {liveTranscript && <p className="live-transcript">"{liveTranscript}"</p>}
-      {error && <div className="error-banner">{error}</div>}
-      {!callActive ? (
-        <button className="btn btn-call" onClick={startCall}>Start Call</button>
-      ) : (
-        <button className="btn btn-end-call" onClick={endCall}>End Call</button>
-      )}
+    <div className="call-bar">
+      <div className={`call-orb mini ${status}`} />
+      <div className="call-bar-text">
+        <span className="call-bar-status">{statusLabel}</span>
+        {liveTranscript && <span className="call-bar-transcript">"{liveTranscript}"</span>}
+        {error && <span className="call-bar-error">{error}</span>}
+      </div>
+      <button className="btn btn-end-call small" onClick={onClose} title="End call">
+        <i className="bi bi-telephone-x"></i> End
+      </button>
     </div>
   );
 }

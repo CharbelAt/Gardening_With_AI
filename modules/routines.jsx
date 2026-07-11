@@ -39,6 +39,7 @@ function AddRoutineModal({ onClose, onAdded }) {
   const [intervalDays, setIntervalDays] = useState(3);
   const [plants, setPlants] = useState([]);
   const [link, setLink] = useState({ plantId: null, careAction: "" });
+  const [tags, setTags] = useState([]);
 
   useEffect(() => {
     getAllPlants().then(setPlants);
@@ -51,6 +52,7 @@ function AddRoutineModal({ onClose, onAdded }) {
       intervalDays: Number(intervalDays) || 1,
       plantId: link.plantId,
       careAction: link.plantId != null ? link.careAction : "",
+      tags: normTags(tags),
     });
     onAdded();
   }
@@ -68,6 +70,7 @@ function AddRoutineModal({ onClose, onAdded }) {
           <input type="number" min="1" value={intervalDays} onChange={(e) => setIntervalDays(e.target.value)} />
         </label>
         <RoutinePlantLink plants={plants} plantId={link.plantId} careAction={link.careAction} onChange={setLink} />
+        <TagPicker presets={PRESET_TAGS.routines} tags={tags} onChange={setTags} />
         <div className="modal-actions">
           <button className="btn" onClick={save}>Add</button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -86,6 +89,7 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
     intervalDays: routine.intervalDays || 1,
     plantId: routine.plantId != null ? routine.plantId : null,
     careAction: routine.careAction || "",
+    tags: routine.tags || [],
   });
 
   useEffect(() => {
@@ -107,6 +111,7 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
       intervalDays: Number(form.intervalDays) || 1,
       plantId: form.plantId,
       careAction: form.plantId != null ? form.careAction : "",
+      tags: normTags(form.tags),
     });
     setEditing(false);
     onChanged();
@@ -132,6 +137,7 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
           <span className="chip"><i className="bi bi-arrow-repeat"></i> every {routine.intervalDays} day{routine.intervalDays === 1 ? "" : "s"}</span>
           <span className="chip"><i className="bi bi-check2-circle"></i> {routine.lastDone ? `done ${timeAgo(routine.lastDone)}` : "never done"}</span>
           {due && <span className="chip due"><i className="bi bi-exclamation-circle"></i> Due now</span>}
+          <TagChips tags={routine.tags} />
         </div>
 
         {linkedPlant && (
@@ -184,6 +190,11 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
               careAction={form.careAction}
               onChange={(link) => setForm({ ...form, ...link })}
             />
+            <TagPicker
+              presets={PRESET_TAGS.routines}
+              tags={form.tags}
+              onChange={(tags) => setForm({ ...form, tags })}
+            />
             <div className="modal-actions">
               <button className="btn" onClick={saveForm}>Save</button>
               <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
@@ -199,6 +210,7 @@ function RoutinesView({ initialId, onNavigate }) {
   const [routines, setRoutines] = useState([]);
   const [selectedId, setSelectedId] = useState(initialId || null);
   const [showAdd, setShowAdd] = useState(false);
+  const [activeTag, setActiveTag] = useState(null);
 
   async function refresh() {
     setRoutines(await getAllRoutines());
@@ -208,6 +220,7 @@ function RoutinesView({ initialId, onNavigate }) {
   }, []);
 
   const selected = routines.find((r) => r.id === selectedId) || null;
+  const visible = activeTag ? routines.filter((r) => (r.tags || []).includes(activeTag)) : routines;
 
   if (selected) {
     return (
@@ -226,6 +239,7 @@ function RoutinesView({ initialId, onNavigate }) {
         <h2><i className="bi bi-arrow-repeat"></i> Routines</h2>
         <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add routine"><i className="bi bi-plus-lg"></i></button>
       </div>
+      <TagFilterBar items={routines} activeTag={activeTag} onSelect={setActiveTag} />
       <div className="item-grid">
         {routines.length === 0 && (
           <div className="empty-state">
@@ -233,7 +247,10 @@ function RoutinesView({ initialId, onNavigate }) {
             <p>No routines yet — tap + to add a recurring task, or ask Sprout to set one up.</p>
           </div>
         )}
-        {routines.map((r) => {
+        {visible.length === 0 && routines.length > 0 && (
+          <p className="empty-hint">No routines tagged "{activeTag}".</p>
+        )}
+        {visible.map((r) => {
           const due = isRoutineDue(r);
           return (
             <button key={r.id} className={due ? "item-card due" : "item-card"} onClick={() => setSelectedId(r.id)}>

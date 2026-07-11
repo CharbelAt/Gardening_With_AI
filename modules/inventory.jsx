@@ -6,10 +6,12 @@ function AddToolModal({ onClose, onAdded }) {
   const [name, setName] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [notes, setNotes] = useState("");
+  const [tags, setTags] = useState([]);
 
   async function save() {
     if (!name.trim()) return;
-    await addTool({ name: name.trim(), quantity: Number(quantity) || 1, notes });
+    await addTool({ name: name.trim(), quantity: Number(quantity) || 1, notes, tags: normTags(tags) });
+    ensureCodexResearch("tool", name.trim()); // background codex entry with sources
     onAdded();
   }
 
@@ -29,6 +31,7 @@ function AddToolModal({ onClose, onAdded }) {
           Notes
           <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
         </label>
+        <TagPicker presets={PRESET_TAGS.tools} tags={tags} onChange={setTags} />
         <div className="modal-actions">
           <button className="btn" onClick={save}>Add</button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -45,10 +48,11 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
     name: tool.name || "",
     quantity: tool.quantity || 1,
     notes: tool.notes || "",
+    tags: tool.tags || [],
   });
 
   async function saveForm() {
-    await updateTool({ ...tool, ...form, quantity: Number(form.quantity) || 1 });
+    await updateTool({ ...tool, ...form, quantity: Number(form.quantity) || 1, tags: normTags(form.tags) });
     setEditing(false);
     onChanged();
   }
@@ -87,11 +91,15 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
             <button className="qty-btn" onClick={() => bumpQuantity(1)} title="One more"><i className="bi bi-plus"></i></button>
           </span>
           <span className="chip"><i className="bi bi-calendar3"></i> added {tool.createdAt ? timeAgo(tool.createdAt) : "unknown"}</span>
+          <TagChips tags={tool.tags} />
         </div>
         {tool.notes && <div className="item-notes"><i className="bi bi-journal-text"></i> {tool.notes}</div>}
 
         <div className="item-quick-actions">
           <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots"></i> Ask Sprout</button>
+          <button className="btn btn-ghost small" onClick={() => onNavigate("codex", { query: tool.name })}>
+            <i className="bi bi-book"></i> Codex
+          </button>
           <button className="btn btn-danger small" onClick={() => setConfirmDelete(true)}>Delete</button>
         </div>
       </div>
@@ -122,6 +130,11 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
               Notes
               <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
             </label>
+            <TagPicker
+              presets={PRESET_TAGS.tools}
+              tags={form.tags}
+              onChange={(tags) => setForm({ ...form, tags })}
+            />
             <div className="modal-actions">
               <button className="btn" onClick={saveForm}>Save</button>
               <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
@@ -137,6 +150,7 @@ function InventoryView({ initialId, onNavigate }) {
   const [tools, setTools] = useState([]);
   const [selectedId, setSelectedId] = useState(initialId || null);
   const [showAdd, setShowAdd] = useState(false);
+  const [activeTag, setActiveTag] = useState(null);
 
   async function refresh() {
     setTools(await getAllTools());
@@ -146,6 +160,7 @@ function InventoryView({ initialId, onNavigate }) {
   }, []);
 
   const selected = tools.find((t) => t.id === selectedId) || null;
+  const visible = activeTag ? tools.filter((t) => (t.tags || []).includes(activeTag)) : tools;
 
   if (selected) {
     return (
@@ -164,6 +179,7 @@ function InventoryView({ initialId, onNavigate }) {
         <h2><i className="bi bi-box-seam"></i> Inventory</h2>
         <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add item"><i className="bi bi-plus-lg"></i></button>
       </div>
+      <TagFilterBar items={tools} activeTag={activeTag} onSelect={setActiveTag} />
       <div className="item-grid">
         {tools.length === 0 && (
           <div className="empty-state">
@@ -171,7 +187,10 @@ function InventoryView({ initialId, onNavigate }) {
             <p>No tools or supplies yet — tap + to add one, or tell Sprout what you bought.</p>
           </div>
         )}
-        {tools.map((t) => (
+        {visible.length === 0 && tools.length > 0 && (
+          <p className="empty-hint">No items tagged "{activeTag}".</p>
+        )}
+        {visible.map((t) => (
           <button key={t.id} className="item-card" onClick={() => setSelectedId(t.id)}>
             <div className="item-card-placeholder"><i className="bi bi-tools"></i></div>
             <span className="item-card-title">{t.name || "Unnamed item"}</span>

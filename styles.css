@@ -84,6 +84,16 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
+  /* Disables Android Chrome's tap-to-search (tapping a word popping up a
+     Google search) — it only triggers on selectable text. Inputs/textareas
+     re-enable selection below; chat bubbles have a Copy button instead. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input, textarea {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 button { font-family: inherit; }
@@ -530,7 +540,47 @@ button { font-family: inherit; }
   font-size: 1rem;
 }
 
-.btn-end-call { background: var(--danger); }
+.btn-end-call { background: var(--danger); color: #fff; }
+.btn-end-call.small { padding: 8px 14px; font-size: 0.85rem; width: auto; margin: 0; flex-shrink: 0; }
+
+/* Voice call embedded in the chat page (CallBar) */
+.call-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.call-orb.mini {
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 0 rgba(76, 148, 85, 0.5), var(--shadow-1);
+}
+
+.call-bar-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.call-bar-status { font-size: 0.85rem; font-weight: 600; color: var(--text-dim); }
+.call-bar-transcript {
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.call-bar-error { font-size: 0.78rem; color: var(--danger); }
+
+.call-toggle.active { color: var(--danger); }
 
 /* ============================================================
    Modals
@@ -984,3 +1034,75 @@ button { font-family: inherit; }
 .codex-entry-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .codex-source { font-size: 0.75rem; color: var(--text-faint); margin-top: 8px; overflow-wrap: anywhere; }
 .codex-source a { color: var(--primary-soft); }
+
+.codex-kind {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: 6px;
+}
+.codex-kind i { color: var(--primary-soft); }
+
+/* ---------- tags ---------- */
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.tag-chip:hover { border-color: var(--primary-soft); }
+
+.tag-chip.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+
+/* Horizontal, scrollable filter bar above card grids */
+.tag-filter-bar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px 2px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: none;
+}
+.tag-filter-bar::-webkit-scrollbar { display: none; }
+
+/* Tag selector inside add/edit modals */
+.tag-picker { margin-bottom: 12px; }
+.tag-picker-label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.tag-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.tag-picker-add { display: flex; gap: 6px; }
+.tag-picker-add input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-family: inherit;
+  margin-top: 0;
+}
+
+/* Read-only tag chips on detail pages */
+.chip.tag { background: color-mix(in srgb, var(--primary) 10%, var(--surface)); }
+.chip.tag i { font-size: 0.7rem; }

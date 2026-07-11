@@ -4,18 +4,19 @@
 // editing files and committing to GitHub Pages (no build step).
 //
 // Navigation model: a persistent bottom bar switches the main view
-// (chat/garden/routines/inventory/codex). "call" is a sub-mode of chat,
-// entered from the phone icon in the header. Cross-module links (e.g. a
-// plant's "Ask Sprout" button, a routine's linked plant) go through
-// navigate(view, {itemId, draft}).
+// (chat/garden/routines/inventory/codex). Voice calls live INSIDE the chat
+// view (CallBar in chat.jsx). Cross-module links (e.g. a plant's "Ask Sprout"
+// button, a routine's linked plant, an item's Codex button) go through
+// navigate(view, {itemId, draft, query}).
 
 function App() {
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [view, setView] = useState("chat"); // chat | call | garden | inventory | routines | codex
+  const [view, setView] = useState("chat"); // chat | garden | inventory | routines | codex
   const [navItemId, setNavItemId] = useState(null); // open this item's detail page on view mount
   const [chatDraft, setChatDraft] = useState(""); // prefilled composer text from "Ask Sprout" buttons
+  const [codexQuery, setCodexQuery] = useState(""); // prefilled codex search from item "Codex" buttons
   const [dueCount, setDueCount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -45,6 +46,7 @@ function App() {
   function navigate(nextView, opts = {}) {
     setNavItemId(opts.itemId != null ? opts.itemId : null);
     if (opts.draft) setChatDraft(opts.draft);
+    setCodexQuery(opts.query || ""); // cleared unless a Codex link set one
     setView(nextView);
   }
 
@@ -140,11 +142,6 @@ function App() {
               <i className="bi bi-chat-square-text"></i>
             </button>
           )}
-          {view === "call" && (
-            <button className="icon-btn" onClick={() => setView("chat")} title="Back to chat">
-              <i className="bi bi-arrow-left"></i>
-            </button>
-          )}
         </div>
         <span className="app-title">
           <i className="bi bi-flower1"></i>
@@ -154,11 +151,6 @@ function App() {
           </span>
         </span>
         <div className="header-side right">
-          {view === "chat" && (
-            <button className="icon-btn" onClick={() => setView("call")} title="Voice call">
-              <i className="bi bi-telephone"></i>
-            </button>
-          )}
           <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
             <i className="bi bi-gear"></i>
           </button>
@@ -178,13 +170,10 @@ function App() {
             onFirstUserMessage={onFirstUserMessage}
           />
         )}
-        {loaded && view === "call" && (
-          <CallTab chatId={activeChatId} messages={messages} setMessages={setMessages} />
-        )}
         {view === "garden" && <GardenView initialId={navItemId} onNavigate={navigate} />}
         {view === "inventory" && <InventoryView initialId={navItemId} onNavigate={navigate} />}
         {view === "routines" && <RoutinesView initialId={navItemId} onNavigate={navigate} />}
-        {view === "codex" && <CodexView onNavigate={navigate} />}
+        {view === "codex" && <CodexView initialQuery={codexQuery} onNavigate={navigate} />}
       </main>
 
       <BottomNav view={view} onNavigate={navigate} dueCount={dueCount} />
