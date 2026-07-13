@@ -1,17 +1,80 @@
-// Inventory module: tools/supplies as a card grid, each with its own detail
-// page. Can also be edited via chat (see ADD_TOOL/UPDATE_TOOL/REMOVE_TOOL in
-// helpers.jsx).
+// Inventory module: tools/supplies as a card grid, each with a photo-capable,
+// info-rich detail page (brand, condition, storage location, purchase date,
+// price, last used). Editable via chat too (ADD_TOOL/UPDATE_TOOL/REMOVE_TOOL
+// in helpers.jsx).
+
+const TOOL_CONDITIONS = ["", "new", "good", "worn", "needs repair", "broken"];
+
+// Shared field block for the add + edit modals.
+function ToolFields({ form, setForm }) {
+  return (
+    <React.Fragment>
+      <label>
+        Name
+        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Pruning shears, Neem oil" />
+      </label>
+      <label>
+        Quantity
+        <input type="number" min="0" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} />
+      </label>
+      <label>
+        Brand (optional)
+        <input value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} placeholder="e.g. Fiskars" />
+      </label>
+      <label>
+        Condition
+        <select value={form.condition} onChange={(e) => setForm({ ...form, condition: e.target.value })}>
+          {TOOL_CONDITIONS.map((c) => (
+            <option key={c} value={c}>{c === "" ? "—" : c}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Stored in (optional)
+        <input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} placeholder="e.g. garden shed, top shelf" />
+      </label>
+      <label>
+        Purchase date (optional)
+        <input type="date" value={form.purchaseDate} onChange={(e) => setForm({ ...form, purchaseDate: e.target.value })} />
+      </label>
+      <label>
+        Price (optional)
+        <input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} placeholder="0.00" />
+      </label>
+      <label>
+        Notes
+        <textarea rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="optional" />
+      </label>
+      <TagPicker presets={PRESET_TAGS.tools} tags={form.tags} onChange={(tags) => setForm({ ...form, tags })} />
+    </React.Fragment>
+  );
+}
+
+function emptyToolForm() {
+  return { name: "", quantity: 1, brand: "", condition: "", location: "", purchaseDate: "", price: "", notes: "", tags: [] };
+}
+
+function toolFromForm(form) {
+  return {
+    name: form.name.trim(),
+    quantity: Number(form.quantity) || 0,
+    brand: form.brand.trim(),
+    condition: form.condition,
+    location: form.location.trim(),
+    purchaseDate: form.purchaseDate,
+    price: form.price === "" ? null : Number(form.price),
+    notes: form.notes,
+    tags: normTags(form.tags),
+  };
+}
 
 function AddToolModal({ onClose, onAdded }) {
-  const [name, setName] = useState("");
-  const [quantity, setQuantity] = useState(1);
-  const [notes, setNotes] = useState("");
-  const [tags, setTags] = useState([]);
+  const [form, setForm] = useState(emptyToolForm());
 
   async function save() {
-    if (!name.trim()) return;
-    await addTool({ name: name.trim(), quantity: Number(quantity) || 1, notes, tags: normTags(tags) });
-    ensureCodexResearch("tool", name.trim()); // background codex entry with sources
+    if (!form.name.trim()) return;
+    await addTool(toolFromForm(form));
+    ensureCodexResearch("tool", form.name.trim()); // background codex entry with sources
     onAdded();
   }
 
@@ -19,21 +82,9 @@ function AddToolModal({ onClose, onAdded }) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>Add tool / supply</h2>
-        <label>
-          Name
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Pruning shears, Neem oil" />
-        </label>
-        <label>
-          Quantity
-          <input type="number" min="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} />
-        </label>
-        <label>
-          Notes
-          <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
-        </label>
-        <TagPicker presets={PRESET_TAGS.tools} tags={tags} onChange={setTags} />
+        <ToolFields form={form} setForm={setForm} />
         <div className="modal-actions">
-          <button className="btn" onClick={save}>Add</button>
+          <button className="btn" onClick={save} disabled={!form.name.trim()}>Add</button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         </div>
       </div>
@@ -44,15 +95,23 @@ function AddToolModal({ onClose, onAdded }) {
 function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmPhotoRemove, setConfirmPhotoRemove] = useState(false);
+  const [lightbox, setLightbox] = useState(false);
   const [form, setForm] = useState({
     name: tool.name || "",
-    quantity: tool.quantity || 1,
+    quantity: tool.quantity != null ? tool.quantity : 1,
+    brand: tool.brand || "",
+    condition: tool.condition || "",
+    location: tool.location || "",
+    purchaseDate: tool.purchaseDate || "",
+    price: tool.price != null ? tool.price : "",
     notes: tool.notes || "",
     tags: tool.tags || [],
   });
+  const fileInputRef = useRef(null);
 
   async function saveForm() {
-    await updateTool({ ...tool, ...form, quantity: Number(form.quantity) || 1, tags: normTags(form.tags) });
+    await updateTool({ ...tool, ...toolFromForm(form) });
     setEditing(false);
     onChanged();
   }
@@ -61,6 +120,27 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
   async function bumpQuantity(delta) {
     const next = Math.max(0, (Number(tool.quantity) || 0) + delta);
     await updateTool({ ...tool, quantity: next });
+    onChanged();
+  }
+
+  async function markUsed() {
+    await updateTool({ ...tool, lastUsed: Date.now() });
+    onChanged();
+  }
+
+  // Photo: camera or gallery (no capture attribute → the OS shows a chooser).
+  async function onPhotoChosen(e) {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    const dataUrl = await resizeImageToDataUrl(file, 800, 0.75);
+    await updateTool({ ...tool, photoThumb: dataUrl });
+    onChanged();
+  }
+
+  async function removePhoto() {
+    await updateTool({ ...tool, photoThumb: null });
+    setConfirmPhotoRemove(false);
     onChanged();
   }
 
@@ -84,25 +164,68 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
       </div>
 
       <div className="item-detail">
+        {tool.photoThumb ? (
+          <button className="detail-hero" onClick={() => setLightbox(true)}>
+            <img src={tool.photoThumb} alt={tool.name} />
+          </button>
+        ) : (
+          <div className="detail-hero placeholder"><i className="bi bi-tools"></i></div>
+        )}
+
         <div className="fact-chips">
           <span className="chip qty-chip">
             <button className="qty-btn" onClick={() => bumpQuantity(-1)} title="One less"><i className="bi bi-dash"></i></button>
             <span><i className="bi bi-boxes"></i> {tool.quantity}</span>
             <button className="qty-btn" onClick={() => bumpQuantity(1)} title="One more"><i className="bi bi-plus"></i></button>
           </span>
+          {tool.brand && <span className="chip"><i className="bi bi-award"></i> {tool.brand}</span>}
+          {tool.condition && <span className="chip"><i className="bi bi-heart-pulse"></i> {tool.condition}</span>}
+          {tool.location && <span className="chip"><i className="bi bi-geo-alt"></i> {tool.location}</span>}
+          {tool.purchaseDate && <span className="chip"><i className="bi bi-bag"></i> bought {tool.purchaseDate}</span>}
+          {tool.price != null && tool.price !== "" && <span className="chip"><i className="bi bi-cash"></i> {tool.price}</span>}
+          <span className="chip"><i className="bi bi-hand-index"></i> used {timeAgo(tool.lastUsed)}</span>
           <span className="chip"><i className="bi bi-calendar3"></i> added {tool.createdAt ? timeAgo(tool.createdAt) : "unknown"}</span>
           <TagChips tags={tool.tags} />
         </div>
         {tool.notes && <div className="item-notes"><i className="bi bi-journal-text"></i> {tool.notes}</div>}
 
         <div className="item-quick-actions">
+          <button className="btn small" onClick={markUsed}><i className="bi bi-hand-index"></i> Mark used</button>
+          <button className="btn small" onClick={() => fileInputRef.current.click()}>
+            <i className="bi bi-camera"></i> {tool.photoThumb ? "Replace photo" : "Add photo"}
+          </button>
+          {tool.photoThumb && (
+            <button className="btn btn-ghost small" onClick={() => setConfirmPhotoRemove(true)}>
+              <i className="bi bi-x-circle"></i> Remove photo
+            </button>
+          )}
           <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots"></i> Ask Sprout</button>
           <button className="btn btn-ghost small" onClick={() => onNavigate("codex", { query: tool.name })}>
             <i className="bi bi-book"></i> Codex
           </button>
-          <button className="btn btn-danger small" onClick={() => setConfirmDelete(true)}>Delete</button>
         </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          style={{ display: "none" }}
+          onChange={onPhotoChosen}
+        />
       </div>
+
+      {lightbox && tool.photoThumb && (
+        <ImageLightbox src={tool.photoThumb} caption={tool.name} onClose={() => setLightbox(false)} />
+      )}
+
+      {confirmPhotoRemove && (
+        <ConfirmModal
+          title="Remove photo?"
+          message={`Remove the photo from "${tool.name}"?`}
+          confirmLabel="Remove"
+          onConfirm={removePhoto}
+          onCancel={() => setConfirmPhotoRemove(false)}
+        />
+      )}
 
       {confirmDelete && (
         <ConfirmModal
@@ -118,27 +241,15 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
         <div className="modal-backdrop" onClick={() => setEditing(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2>Edit item</h2>
-            <label>
-              Name
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            </label>
-            <label>
-              Quantity
-              <input type="number" min="0" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} />
-            </label>
-            <label>
-              Notes
-              <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-            </label>
-            <TagPicker
-              presets={PRESET_TAGS.tools}
-              tags={form.tags}
-              onChange={(tags) => setForm({ ...form, tags })}
-            />
+            <ToolFields form={form} setForm={setForm} />
             <div className="modal-actions">
-              <button className="btn" onClick={saveForm}>Save</button>
+              <button className="btn" onClick={saveForm} disabled={!form.name.trim()}>Save</button>
               <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
             </div>
+            <hr />
+            <button className="btn btn-danger" onClick={() => { setEditing(false); setConfirmDelete(true); }}>
+              Delete item
+            </button>
           </div>
         </div>
       )}
@@ -192,9 +303,16 @@ function InventoryView({ initialId, onNavigate }) {
         )}
         {visible.map((t) => (
           <button key={t.id} className="item-card" onClick={() => setSelectedId(t.id)}>
-            <div className="item-card-placeholder"><i className="bi bi-tools"></i></div>
+            {t.photoThumb ? (
+              <img src={t.photoThumb} alt={t.name} />
+            ) : (
+              <div className="item-card-placeholder"><i className="bi bi-tools"></i></div>
+            )}
             <span className="item-card-title">{t.name || "Unnamed item"}</span>
-            <span className="item-card-sub">× {t.quantity}</span>
+            <span className="item-card-sub">
+              × {t.quantity}
+              {t.condition ? ` · ${t.condition}` : ""}
+            </span>
           </button>
         ))}
       </div>

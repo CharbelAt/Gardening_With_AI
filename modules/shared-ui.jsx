@@ -71,9 +71,15 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
     onClose();
   }
 
+  // Wipes EVERYTHING the app stores on this device — conversations, plants,
+  // tools, routines, and the codex library.
   async function clearMemory() {
     await clearAllMessages();
     await clearAllChats();
+    await clearAllPlants();
+    await clearAllTools();
+    await clearAllRoutines();
+    await clearAllCodexEntries();
     setConfirmClear(false);
     onCleared();
   }
@@ -131,14 +137,14 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
         <button className="btn btn-ghost btn-block" onClick={onShowHelp}>
           <i className="bi bi-question-circle"></i> How to use Garden Companion
         </button>
-        <p className="hint">Conversation memory is stored only in this browser.</p>
-        <button className="btn btn-danger" onClick={() => setConfirmClear(true)}>Clear local memory</button>
+        <p className="hint">All app data is stored only in this browser.</p>
+        <button className="btn btn-danger" onClick={() => setConfirmClear(true)}>Clear all data</button>
       </div>
 
       {confirmClear && (
         <ConfirmModal
-          title="Clear local memory?"
-          message="Deletes ALL chats and conversation history on this device. This can't be undone."
+          title="Clear ALL data?"
+          message="Deletes everything stored on this device: chats, messages, plants, tools, routines, and saved codex entries. This can't be undone."
           confirmLabel="Delete everything"
           onConfirm={clearMemory}
           onCancel={() => setConfirmClear(false)}
@@ -403,7 +409,7 @@ function HelpModal({ onClose }) {
           <h3>Chat</h3>
           <p>Type gardening questions to Sprout. Tap the camera icon to send a photo — take a new one or pick from your gallery — and it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil".</p>
           <h3>Voice calls</h3>
-          <p>Tap the phone icon in the chat composer for a hands-free voice conversation right inside the chat — you'll see a live transcript as you speak, and everything lands in the same thread. Tap the red button to hang up. Works best in Chrome on Android.</p>
+          <p>Tap the phone icon in the chat composer for a hands-free voice conversation right inside the chat — you'll see a live transcript as you speak, and everything lands in the same thread. You can interrupt Sprout any time just by talking: it stops speaking and listens. Tap the red button to hang up. Works best in Chrome on Android.</p>
           <h3>Chats</h3>
           <p>The chat-bubbles icon in the header lets you keep separate conversation threads, rename them, or start a new one. New chats name themselves after your first message.</p>
           <h3>Garden</h3>

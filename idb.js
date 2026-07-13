@@ -174,7 +174,9 @@ function clearAllMessages() {
 
 // ---------- tools (inventory) ----------
 
-// tool: { name, quantity, notes, tags: [string], createdAt }
+// tool: { name, quantity, notes, tags: [string], createdAt,
+//         photoThumb?: dataURL|null, brand?, condition?, location?,
+//         purchaseDate?: "YYYY-MM-DD", price?: number|null, lastUsed?: timestamp|null }
 function addTool(tool) {
   return addRecord(STORE_TOOLS, { ...tool, createdAt: Date.now() });
 }
@@ -186,6 +188,9 @@ function deleteTool(id) {
 }
 function updateTool(tool) {
   return putRecord(STORE_TOOLS, tool);
+}
+function clearAllTools() {
+  return clearStore(STORE_TOOLS);
 }
 
 // ---------- saved codex entries (AI deep-search results the user kept) ----------
@@ -202,6 +207,9 @@ function getAllCodexEntries() {
 }
 function deleteCodexEntry(id) {
   return deleteRecord(STORE_CODEX, id);
+}
+function clearAllCodexEntries() {
+  return clearStore(STORE_CODEX);
 }
 
 // ---------- routines (recurring care tasks) ----------
@@ -222,6 +230,9 @@ function deleteRoutine(id) {
 }
 function updateRoutine(routine) {
   return putRecord(STORE_ROUTINES, routine);
+}
+function clearAllRoutines() {
+  return clearStore(STORE_ROUTINES);
 }
 function isRoutineDue(routine) {
   if (!routine.lastDone) return true;
@@ -254,4 +265,7 @@ function deletePlant(id) {
 }
 function updatePlant(plant) {
   return putRecord(STORE_PLANTS, plant);
+}
+function clearAllPlants() {
+  return clearStore(STORE_PLANTS);
 }

@@ -108,9 +108,25 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
     if (!file || busy) return;
     setError("");
     setBusy(true);
+
+    // The photo is SAVED FIRST, before any AI call — adding pictures must
+    // always work, even when the vision API is down. Analysis then fills in
+    // the entry's text (or a plain "analysis unavailable" note on failure).
+    let withPhoto;
+    const entryDate = Date.now();
     try {
       const dataUrl = await resizeImageToDataUrl(file);
       const [, base64] = dataUrl.split(",");
+      withPhoto = {
+        ...plant,
+        photoHistory: [
+          ...(plant.photoHistory || []),
+          { imageThumb: dataUrl, analysis: "Photo added — analyzing…", date: entryDate, kind: "photo" },
+        ],
+      };
+      await updatePlant(withPhoto);
+      onChanged();
+
       const prompt =
         `You are analyzing a photo of the user's plant "${plant.name}" ` +
         `(location: ${plant.location || "unknown"}, planted: ${plant.plantingDate || "unknown"}, ` +
@@ -123,14 +139,13 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
       const data = await apiFetch("/api/vision", { imageBase64: base64, mimeType: "image/jpeg", prompt });
       const { cleanText, actions } = extractActions(data.reply || "");
 
-      const updatedPlant = {
-        ...plant,
-        photoHistory: [
-          ...(plant.photoHistory || []),
-          { imageThumb: dataUrl, analysis: cleanText, date: Date.now(), kind: "photo" },
-        ],
+      const analyzed = {
+        ...withPhoto,
+        photoHistory: withPhoto.photoHistory.map((h) =>
+          h.date === entryDate ? { ...h, analysis: cleanText || "Photo added" } : h
+        ),
       };
-      await updatePlant(updatedPlant);
+      await updatePlant(analyzed);
       onChanged();
 
       // Photo analysis for an existing plant should only ever propose an
@@ -139,13 +154,24 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
       for (const action of updates) {
         const fields = action.fields || {};
         if (getAiWriteMode() === "confirm") {
-          setPendingActions((prev) => [...prev, { type: "update_plant", plant: updatedPlant, fields }]);
+          setPendingActions((prev) => [...prev, { type: "update_plant", plant: analyzed, fields }]);
         } else {
-          await applyPlantUpdate(updatedPlant, fields);
+          await applyPlantUpdate(analyzed, fields);
           onChanged();
         }
       }
     } catch (e) {
+      // Keep the photo; just mark that analysis didn't happen.
+      if (withPhoto) {
+        const kept = {
+          ...withPhoto,
+          photoHistory: withPhoto.photoHistory.map((h) =>
+            h.date === entryDate ? { ...h, analysis: "Photo added (AI analysis unavailable)" } : h
+          ),
+        };
+        await updatePlant(kept).catch(() => {});
+        onChanged();
+      }
       setError(e.message);
     } finally {
       setBusy(false);

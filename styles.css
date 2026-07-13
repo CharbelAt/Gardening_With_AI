@@ -78,12 +78,24 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
-html, body { height: 100%; }
+/* The DOCUMENT never scrolls — only inner panels (.messages, .item-grid,
+   .tab-panel…) do. This is what keeps the header and bottom nav perfectly
+   still: mobile browsers only collapse/expand their URL bar (shifting the
+   whole layout) when the page itself scrolls, and rubber-band overscroll is
+   killed by overscroll-behavior. */
+html, body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
+  position: fixed;
+  inset: 0;
+  width: 100%;
   /* Disables Android Chrome's tap-to-search (tapping a word popping up a
      Google search) — it only triggers on selectable text. Inputs/textareas
      re-enable selection below; chat bubbles have a Copy button instead. */
@@ -118,11 +130,17 @@ button { font-family: inherit; }
 .app {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  height: 100%;
   max-width: 480px;
   margin: 0 auto;
   background: var(--bg);
   color: var(--text);
+  overflow: hidden;
+}
+
+/* Inner scrollers shouldn't chain their overscroll to the page. */
+.messages, .tab-panel, .item-detail, .item-grid, .codex-list, .chat-list {
+  overscroll-behavior: contain;
 }
 
 /* On bigger screens, frame the phone-shaped app instead of stretching it. */
@@ -130,7 +148,7 @@ button { font-family: inherit; }
   body { background: color-mix(in srgb, var(--bg, #e6ebe2) 60%, #cbd6c4); }
   .app {
     max-width: 520px;
-    height: calc(100dvh - 32px);
+    height: calc(100% - 32px);
     margin: 16px auto;
     border-radius: var(--r-xl);
     overflow: hidden;

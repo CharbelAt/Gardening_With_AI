@@ -58,6 +58,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     setBusy(true);
     try {
       const data = await apiFetch("/api/chat", {
+        mode: "chat",
         messages: await buildContextMessages(nextHistory, "chat"),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
@@ -79,7 +80,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     setRegeneratingId(msg.id);
     setError("");
     try {
-      const data = await apiFetch("/api/chat", { messages: await buildContextMessages(historyUpTo, "chat") });
+      const data = await apiFetch("/api/chat", { mode: "chat", messages: await buildContextMessages(historyUpTo, "chat") });
       const { cleanText, actions } = extractActions(data.reply || "");
       const updated = { ...msg, text: cleanText };
       await updateMessage(updated);

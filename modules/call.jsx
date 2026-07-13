@@ -4,10 +4,13 @@
 // typed messages — the chat itself is the live transcript, and the interim
 // (not-yet-final) recognition text is previewed in the bar.
 //
-// Keeps the battle-tested stale-closure guards: statusRef (not React state)
-// checked in rec.onend, killRecognition() detaching onend before abort, and a
-// 500ms pause after TTS before the mic reopens — this is what stops the mic
-// from hearing the AI's own voice.
+// BARGE-IN (user request): the mic now stays open WHILE Sprout is speaking.
+// If the user starts talking mid-reply, TTS is cancelled and the call flips
+// straight to listening. To keep the mic from hearing Sprout's own voice as
+// "user speech" (the old feedback bug), everything heard during speaking —
+// and within a 1s tail after it — is checked against the text currently being
+// spoken (isLikelyEcho) and needs a minimum length before it counts as a real
+// interruption. statusRef (not React state) still drives all handler logic.
 
 function CallBar({ chatId, messages, setMessages, onClose }) {
   const SpeechRecognitionCtor =
@@ -20,6 +23,7 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
   const recognitionRef = useRef(null);
   const activeRef = useRef(false);
   const statusRef = useRef("idle");
+  const spokenRef = useRef({ text: "", endedAt: 0 }); // what TTS is/was saying (echo filter)
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
 
@@ -38,7 +42,28 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
     }
   }
 
-  const startListening = useCallback(() => {
+  function normalizeSpeech(s) {
+    return (s || "")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N} ]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // True when what the mic heard is (probably) Sprout's own voice: we're
+  // speaking (or just finished <1s ago) and the heard text appears inside the
+  // text being spoken.
+  function isLikelyEcho(heard) {
+    const spoken = normalizeSpeech(spokenRef.current.text);
+    if (!spoken) return false;
+    const h = normalizeSpeech(heard);
+    if (!h) return true;
+    const inEchoWindow =
+      statusRef.current === "speaking" || Date.now() - spokenRef.current.endedAt < 1000;
+    return inEchoWindow && spoken.includes(h);
+  }
+
+  const startListening = useCallback((opts = {}) => {
     if (!activeRef.current) return;
     killRecognition(); // never run two recognizers at once
 
@@ -54,8 +79,23 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
         if (event.results[i].isFinal) finalText += event.results[i][0].transcript;
         else interim += event.results[i][0].transcript;
       }
-      setLiveTranscript(interim || finalText);
-      if (finalText.trim()) handleUserUtterance(finalText.trim());
+      const heard = (interim || finalText).trim();
+      if (!heard) return;
+
+      if (statusRef.current === "speaking") {
+        // Barge-in check: ignore our own echo and too-short noises; a real
+        // interruption cancels TTS and flips to listening immediately.
+        if (isLikelyEcho(heard) || normalizeSpeech(heard).length < 6) return;
+        window.speechSynthesis.cancel();
+        updateStatus("listening");
+      } else if (isLikelyEcho(heard)) {
+        return; // echo tail right after TTS finished
+      }
+
+      setLiveTranscript(heard);
+      if (finalText.trim() && statusRef.current === "listening" && !isLikelyEcho(finalText)) {
+        handleUserUtterance(finalText.trim());
+      }
     };
 
     rec.onerror = (e) => {
@@ -64,11 +104,13 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
     };
 
     rec.onend = () => {
-      // Only auto-restart if we're still supposed to be in the listening
-      // phase (e.g. it timed out on silence). Reading statusRef here instead
-      // of React state avoids restarting the mic during "thinking"/"speaking"
-      // and picking up the AI's own voice as new input.
-      if (activeRef.current && statusRef.current === "listening") {
+      // Auto-restart whenever the call should still be hearing the user:
+      // during listening (silence timeout) AND during speaking (barge-in
+      // watch). Reading statusRef avoids the old stale-closure feedback bug.
+      if (
+        activeRef.current &&
+        (statusRef.current === "listening" || statusRef.current === "speaking")
+      ) {
         try {
           rec.start();
         } catch (_) {}
@@ -76,13 +118,14 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
     };
 
     recognitionRef.current = rec;
-    updateStatus("listening");
+    if (!opts.keepStatus) updateStatus("listening");
     setLiveTranscript("");
     rec.start();
   }, []);
 
   async function handleUserUtterance(text) {
     killRecognition();
+    window.speechSynthesis.cancel(); // in case we got here via barge-in
     updateStatus("thinking");
     setLiveTranscript("");
     setError("");
@@ -94,6 +137,7 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
 
     try {
       const data = await apiFetch("/api/chat", {
+        mode: "call",
         messages: await buildContextMessages(nextHistory, "call"),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
@@ -113,23 +157,26 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
   }
 
   function speak(text) {
-    killRecognition(); // guarantee the mic is off before we start talking
     updateStatus("speaking");
-    const utter = new SpeechSynthesisUtterance(stripForSpeech(text));
+    const speakable = stripForSpeech(text);
+    spokenRef.current = { text: speakable, endedAt: 0 };
+    const utter = new SpeechSynthesisUtterance(speakable);
     utter.rate = 1.0;
     utter.onend = () => {
-      // Short pause lets the phone speaker's audio tail die out before the
-      // mic reopens, so it doesn't hear its own reply as new input.
-      setTimeout(() => {
-        if (activeRef.current) startListening();
-        else updateStatus("idle");
-      }, 500);
+      spokenRef.current.endedAt = Date.now();
+      if (!activeRef.current) return updateStatus("idle");
+      // No barge-in happened — flip to listening; the recognizer is already
+      // running (echo filtering handles the 1s audio tail).
+      if (statusRef.current === "speaking") updateStatus("listening");
     };
     utter.onerror = () => {
-      if (activeRef.current) startListening();
+      spokenRef.current.endedAt = Date.now();
+      if (activeRef.current && statusRef.current === "speaking") updateStatus("listening");
     };
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utter);
+    // Keep the mic open while talking so the user can interrupt.
+    startListening({ keepStatus: true });
   }
 
   // Mount = call starts; unmount = full cleanup (mic off, TTS cancelled).
@@ -147,7 +194,7 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
     idle: "Connecting…",
     listening: "Listening…",
     thinking: "Thinking…",
-    speaking: "Speaking…",
+    speaking: "Speaking — talk to interrupt",
   }[status];
 
   return (

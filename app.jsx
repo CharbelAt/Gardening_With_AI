@@ -66,6 +66,9 @@ function App() {
       setMessages(history);
       setLoaded(true);
       if (!getSettings().apiBase) setShowSettings(true);
+      // Back-fill codex entries for any items that missed their auto-research
+      // (background, throttled — see syncCodexEntries in helpers.jsx).
+      if (getSettings().apiBase) syncCodexEntries();
     })();
   }, []);
 
@@ -129,6 +132,7 @@ function App() {
     const id = await ensureDefaultChat();
     setChats(await getAllChats());
     await switchChat(id);
+    refreshDueCount(); // routines are gone — clear the nav badge immediately
   }
 
   const activeChat = chats.find((c) => c.id === activeChatId);

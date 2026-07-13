@@ -220,14 +220,20 @@ const CODEX_RESEARCH_SYSTEM =
 // Every new plant/tool automatically gets a researched codex entry (with
 // sources) so the codex accumulates real knowledge about what the user owns.
 // Fire-and-forget: never blocks or breaks the add itself; skips duplicates.
+// mode:"research" routes to the web-search-capable model chain server-side.
+const codexInFlight = new Set(); // names being researched right now (dedupe)
+
 async function ensureCodexResearch(kind, name) {
   const clean = (name || "").trim();
   if (!clean) return;
+  const norm = clean.toLowerCase();
+  if (codexInFlight.has(norm)) return;
+  codexInFlight.add(norm);
   try {
     const existing = await getAllCodexEntries();
-    const norm = clean.toLowerCase();
     if (existing.some((e) => (e.itemName || e.title || "").trim().toLowerCase() === norm)) return;
     const data = await apiFetch("/api/chat", {
+      mode: "research",
       messages: [
         { role: "system", content: CODEX_RESEARCH_SYSTEM },
         { role: "user", content: `${kind === "plant" ? "Plant" : "Tool/supply"}: ${clean}` },
@@ -238,6 +244,34 @@ async function ensureCodexResearch(kind, name) {
     await addCodexEntry({ title: clean, body, sources, kind, itemName: clean, auto: true });
   } catch (e) {
     console.error("codex auto-research failed:", e.message);
+  } finally {
+    codexInFlight.delete(norm);
+  }
+}
+
+// Reconciliation sweep: research any plant/tool that somehow has no codex
+// entry yet (e.g. Groq was down at add time, or the item predates the codex
+// feature). Runs on app load and whenever the Codex opens; capped per sweep
+// so it can never burn through the free-tier quota in one go.
+async function syncCodexEntries(maxNew = 3) {
+  try {
+    const [plants, tools, entries] = await Promise.all([
+      getAllPlants(),
+      getAllTools(),
+      getAllCodexEntries(),
+    ]);
+    const have = new Set(entries.map((e) => (e.itemName || e.title || "").trim().toLowerCase()));
+    const missing = [
+      ...plants.map((p) => ({ kind: "plant", name: p.name })),
+      ...tools.map((t) => ({ kind: "tool", name: t.name })),
+    ].filter((x) => x.name && x.name.trim() && !have.has(x.name.trim().toLowerCase()));
+    for (const item of missing.slice(0, maxNew)) {
+      await ensureCodexResearch(item.kind, item.name); // sequential — gentle on the quota
+    }
+    return missing.length;
+  } catch (e) {
+    console.error("codex sync failed:", e.message);
+    return 0;
   }
 }
 
@@ -263,7 +297,14 @@ async function buildKnowledgeContext() {
   if (tools.length) {
     parts.push(
       "Tools/supplies: " +
-        tools.map((t) => `id:${t.id} "${t.name}" x${t.quantity}${tagsLabel(t)}`).join(", ")
+        tools
+          .map((t) => {
+            const extras = [t.condition, t.location ? `stored: ${t.location}` : "", t.brand]
+              .filter(Boolean)
+              .join(", ");
+            return `id:${t.id} "${t.name}" x${t.quantity}${extras ? ` (${extras})` : ""}${tagsLabel(t)}`;
+          })
+          .join(", ")
     );
   }
 
@@ -304,36 +345,52 @@ async function buildKnowledgeContext() {
 // sent once the user had data, which meant the AI could never add the FIRST
 // plant/tool via chat).
 const ACTION_CONVENTIONS =
-  "\n\nYou can change the app's data by ending your reply with one or more hidden " +
-  "machine-readable action lines. The user never sees these lines — never mention or " +
-  "explain them in your visible reply. Each action goes on its own line at the VERY END " +
-  "of your reply, with its JSON on a single line:\n" +
+  "\n\n## CHANGING THE APP'S DATA (critical)\n" +
+  "You are connected to the user's garden app (Garden, Inventory, Routines modules). The ONLY " +
+  "way you can create or change anything in those modules is by emitting action lines. Saying " +
+  '"I\'ve added it" without an action line saves NOTHING — if you claim a change, you MUST emit ' +
+  "the matching line(s).\n" +
+  "An action line is one single line — the keyword, a colon, then its complete JSON on that " +
+  "same line — placed at the very end of your reply, after your visible text. Emit SEVERAL " +
+  "action lines (one per line) when the user mentions several changes in one message. The app " +
+  "strips these lines before display; the user never sees them, so never mention or explain them.\n" +
+  "FORMULAS (copy these shapes exactly):\n" +
   'ADD_PLANT: {"fields": {"name": "...", "location": "...", "plantingDate": "YYYY-MM-DD", "notes": "...", "tags": ["..."]}}\n' +
   'UPDATE_PLANT: {"id": <plant id>, "fields": {"lastWatered": "YYYY-MM-DD", "lastFertilized": "YYYY-MM-DD", "name": "...", "location": "...", "notes": "...", "tags": ["..."]}}\n' +
-  'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "notes": "...", "tags": ["..."]}}\n' +
-  'UPDATE_TOOL: {"id": <tool id>, "fields": {"quantity": 2, "notes": "...", "tags": ["..."]}}\n' +
+  'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "notes": "...", "tags": ["..."], "brand": "...", "condition": "new|good|worn|needs repair", "location": "...", "purchaseDate": "YYYY-MM-DD", "price": 0}}\n' +
+  'UPDATE_TOOL: {"id": <tool id>, "fields": {"quantity": 2, "notes": "...", "tags": ["..."], "brand": "...", "condition": "...", "location": "...", "lastUsed": "YYYY-MM-DD", "price": 0}}\n' +
   'REMOVE_TOOL: {"id": <tool id>}\n' +
   'ADD_ROUTINE: {"fields": {"task": "...", "intervalDays": 3, "plantId": <plant id>, "careAction": "water", "tags": ["..."]}}\n' +
   'UPDATE_ROUTINE: {"id": <routine id>, "fields": {"task": "...", "intervalDays": 5, "tags": ["..."]}}\n' +
   'COMPLETE_ROUTINE: {"id": <routine id>}\n' +
-  "Rules: use real ids from the garden data above; only include fields that actually change; " +
-  'omit "location" on ADD_PLANT if the user didn\'t say where it is (their default is used); ' +
-  'on ADD_ROUTINE, "plantId" and "careAction" ("water" or "fertilize") are optional — set them ' +
-  "when the routine cares for one specific plant, so completing it also updates that plant. " +
-  '"tags" is optional everywhere: prefer these presets — plants: ' +
+  "WORKED EXAMPLES:\n" +
+  'User says: "I bought 2 bags of tomato fertilizer and planted mint in the balcony pot" — ' +
+  "your reply chats normally, then ends with these two lines:\n" +
+  'ADD_TOOL: {"fields": {"name": "Tomato fertilizer", "quantity": 2, "tags": ["fertilizer", "consumable"]}}\n' +
+  'ADD_PLANT: {"fields": {"name": "Mint", "location": "balcony pot", "tags": ["herb", "outdoor"]}}\n' +
+  'User says: "add a note to the basil: it looked droopy this morning" (basil is id:4 with notes "from a cutting") — your reply ends with:\n' +
+  'UPDATE_PLANT: {"id": 4, "fields": {"notes": "from a cutting; looked droopy this morning"}}\n' +
+  "RULES:\n" +
+  "- ALWAYS act on explicit commands — add, remove, update, note, log, track, remember — with the matching action line(s).\n" +
+  '- "notes" REPLACES the old notes: to add a note, repeat the existing notes and append the new one (see example).\n' +
+  "- Use real ids from the garden data above. Only include fields that actually change. Never leave <placeholders> in the JSON.\n" +
+  "- Dates: use the device date given above. When the user watered/fertilized a plant: UPDATE_PLANT with that date, plus COMPLETE_ROUTINE if a matching routine exists.\n" +
+  '- ADD_ROUTINE: "plantId" + "careAction" ("water"/"fertilize") are optional — set them when the routine cares for one specific plant, so completing it also updates that plant.\n' +
+  "- Tag new items with 1-3 tags. Presets — plants: " +
   PRESET_TAGS.plants.join("/") +
   "; tools: " +
   PRESET_TAGS.tools.join("/") +
   "; routines: " +
   PRESET_TAGS.routines.join("/") +
-  " — and only invent a new short lowercase tag when none fit. Always tag new items with 1-3 tags. " +
-  "When the user says they watered/fertilized a plant, use UPDATE_PLANT with today's date, and " +
-  "also COMPLETE_ROUTINE if a matching routine exists. Only emit actions for real changes the " +
-  "user stated or clearly asked for — never invent one, and don't repeat an action already applied.";
+  ". Invent a short lowercase tag only when none fit.\n" +
+  "- If you are UNSURE which item the user means, or whether they really want a change: ask a short clarifying question in your visible reply and emit NO action line for that change.\n" +
+  "- Never invent changes the user didn't state, and don't re-emit an action already applied earlier in the conversation.";
 
 // Builds the text-only context array the chat model sees, from stored history.
+// Calls send a shorter tail — every spoken turn is a fresh request, and the
+// smaller payload keeps them well under Groq's free-tier token-per-minute caps.
 async function buildContextMessages(history, mode) {
-  const recent = history.slice(-CONTEXT_LIMIT);
+  const recent = history.slice(mode === "call" ? -10 : -CONTEXT_LIMIT);
   const knowledge = await buildKnowledgeContext();
   const sys =
     SYSTEM_PROMPT_BASE +
@@ -386,9 +443,12 @@ async function buildChatVisionPrompt(caption) {
 
 // ---------- AI action extraction ----------
 
-// Pulls ALL trailing hidden action lines off an AI reply (each `VERB: {json}`
-// on its own line at the end of the text). Returns the cleaned visible text
-// plus the parsed actions in the order the model wrote them.
+// Pulls ALL hidden action lines out of an AI reply. Models don't always obey
+// "very end of reply, bare line" — this scans EVERY line and tolerates the
+// usual decorations (code fences, **bold**, `backticks`, list dashes, quotes),
+// so an action the model emitted is never silently dropped just because it
+// was wrapped in markdown. JSON must still be on a single line (the prompt
+// demands it and shows examples).
 const ACTION_TYPE_MAP = {
   ADD_PLANT: "add",
   UPDATE_PLANT: "update",
@@ -400,23 +460,31 @@ const ACTION_TYPE_MAP = {
   COMPLETE_ROUTINE: "complete_routine",
 };
 const ACTION_LINE_RE =
-  /(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE):\s*(\{[^\n]*\})\s*$/;
+  /^[\s>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE)\**\s*:\s*(\{.*\})[\s`*]*$/;
 
 function extractActions(text) {
-  let cleanText = (text || "").trimEnd();
+  const lines = (text || "").split("\n");
   const actions = [];
-  for (let guard = 0; guard < 8; guard++) {
-    const match = cleanText.match(ACTION_LINE_RE);
-    if (!match) break;
-    try {
-      const payload = JSON.parse(match[2]);
-      actions.unshift({ type: ACTION_TYPE_MAP[match[1]], ...payload });
-    } catch (_) {
-      break; // malformed JSON — leave the rest of the text alone
+  const kept = [];
+  for (const line of lines) {
+    const match = line.match(ACTION_LINE_RE);
+    if (match && actions.length < 12) {
+      try {
+        const payload = JSON.parse(match[2]);
+        actions.push({ type: ACTION_TYPE_MAP[match[1]], ...payload });
+        continue; // consumed — never shown to the user
+      } catch (_) {
+        // malformed JSON — keep the line visible rather than losing content
+      }
     }
-    cleanText = cleanText.slice(0, match.index).trimEnd();
+    kept.push(line);
   }
-  return { cleanText: cleanText.trim(), actions };
+  // Remove code fences that only existed to wrap action lines (now empty).
+  const cleanText = kept
+    .join("\n")
+    .replace(/```[a-z]*\s*```/gi, "")
+    .trim();
+  return { cleanText, actions };
 }
 
 // Back-compat single-action wrapper (kept in case any older code path calls it).
@@ -506,10 +574,12 @@ async function applyPlantAdd(fields) {
 
 async function applyToolAdd(fields) {
   await addTool({
+    ...fields, // carries brand/condition/location/purchaseDate/price through
     name: fields.name || "New item",
     quantity: Number(fields.quantity) || 1,
     notes: fields.notes || "",
     tags: normTags(fields.tags),
+    lastUsed: fields.lastUsed ? Date.parse(fields.lastUsed) || null : null,
   });
   ensureCodexResearch("tool", fields.name); // background — never blocks the add
 }
@@ -518,6 +588,7 @@ async function applyToolUpdate(tool, fields) {
   const updated = { ...tool, ...fields };
   if (fields.quantity != null) updated.quantity = Math.max(0, Number(fields.quantity) || 0);
   if (fields.tags) updated.tags = normTags(fields.tags);
+  if (fields.lastUsed) updated.lastUsed = Date.parse(fields.lastUsed) || Date.now();
   await updateTool(updated);
 }
 

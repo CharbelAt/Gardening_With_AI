@@ -64,6 +64,11 @@ function CodexView({ initialQuery, onNavigate }) {
   }
   useEffect(() => {
     refreshSaved();
+    // Back-fill any plant/tool that's missing its researched entry (e.g. the
+    // AI was unreachable when it was added), then refresh the list.
+    syncCodexEntries().then((missing) => {
+      if (missing > 0) refreshSaved();
+    });
   }, []);
 
   const q = query.toLowerCase();
@@ -81,6 +86,7 @@ function CodexView({ initialQuery, onNavigate }) {
     setAiResult(null);
     try {
       const data = await apiFetch("/api/chat", {
+        mode: "research", // web-search-capable model chain
         messages: [
           { role: "system", content: CODEX_RESEARCH_SYSTEM },
           { role: "user", content: term },
