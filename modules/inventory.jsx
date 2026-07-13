@@ -108,7 +108,8 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
     notes: tool.notes || "",
     tags: tool.tags || [],
   });
-  const fileInputRef = useRef(null);
+  const fileInputRef = useRef(null); // gallery / files
+  const cameraInputRef = useRef(null); // forces the camera
 
   async function saveForm() {
     await updateTool({ ...tool, ...toolFromForm(form) });
@@ -191,8 +192,11 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
 
         <div className="item-quick-actions">
           <button className="btn small" onClick={markUsed}><i className="bi bi-hand-index"></i> Mark used</button>
+          <button className="btn small" onClick={() => cameraInputRef.current.click()}>
+            <i className="bi bi-camera"></i> Camera
+          </button>
           <button className="btn small" onClick={() => fileInputRef.current.click()}>
-            <i className="bi bi-camera"></i> {tool.photoThumb ? "Replace photo" : "Add photo"}
+            <i className="bi bi-images"></i> Gallery
           </button>
           {tool.photoThumb && (
             <button className="btn btn-ghost small" onClick={() => setConfirmPhotoRemove(true)}>
@@ -204,6 +208,14 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
             <i className="bi bi-book"></i> Codex
           </button>
         </div>
+        <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          style={{ display: "none" }}
+          onChange={onPhotoChosen}
+        />
         <input
           ref={fileInputRef}
           type="file"

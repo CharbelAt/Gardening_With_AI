@@ -406,11 +406,19 @@ button { font-family: inherit; }
 .composer {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 4px;
+  padding: 8px 8px;
   background: var(--surface);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+/* Five controls share the row (camera, gallery, input, call, send) — slim
+   the icon buttons so the text input keeps usable width on small phones. */
+.composer .icon-btn {
+  min-width: 38px;
+  padding: 8px 6px;
+  font-size: 1.15rem;
 }
 
 .text-input {

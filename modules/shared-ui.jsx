@@ -407,7 +407,7 @@ function HelpModal({ onClose }) {
           <h3>Getting around</h3>
           <p>The bar at the bottom switches between Chat, Garden, Routines, Inventory, and Codex. The gear in the header opens Settings.</p>
           <h3>Chat</h3>
-          <p>Type gardening questions to Sprout. Tap the camera icon to send a photo — take a new one or pick from your gallery — and it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil".</p>
+          <p>Type gardening questions to Sprout. The camera button takes a new photo; the pictures button picks one from your gallery — either way it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil".</p>
           <h3>Voice calls</h3>
           <p>Tap the phone icon in the chat composer for a hands-free voice conversation right inside the chat — you'll see a live transcript as you speak, and everything lands in the same thread. You can interrupt Sprout any time just by talking: it stops speaking and listens. Tap the red button to hang up. Works best in Chrome on Android.</p>
           <h3>Chats</h3>

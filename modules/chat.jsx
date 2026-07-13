@@ -10,7 +10,8 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
   const [pendingPhoto, setPendingPhoto] = useState(null); // { dataUrl, base64, caption }
   const [regeneratingId, setRegeneratingId] = useState(null);
   const [callActive, setCallActive] = useState(false);
-  const fileInputRef = useRef(null);
+  const fileInputRef = useRef(null); // gallery / files
+  const cameraInputRef = useRef(null); // forces the camera (capture attr)
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -200,12 +201,28 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
       <div className="composer">
         <button
           className="icon-btn"
-          title="Send a photo (camera or gallery)"
-          onClick={() => fileInputRef.current.click()}
+          title="Take a photo"
+          onClick={() => cameraInputRef.current.click()}
           disabled={busy}
         >
           <i className="bi bi-camera"></i>
         </button>
+        <button
+          className="icon-btn"
+          title="Photo from gallery"
+          onClick={() => fileInputRef.current.click()}
+          disabled={busy}
+        >
+          <i className="bi bi-images"></i>
+        </button>
+        <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          style={{ display: "none" }}
+          onChange={onPhotoChosen}
+        />
         <input
           ref={fileInputRef}
           type="file"

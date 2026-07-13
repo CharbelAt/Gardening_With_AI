@@ -63,7 +63,8 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
     notes: plant.notes || "",
     tags: plant.tags || [],
   });
-  const fileInputRef = useRef(null);
+  const fileInputRef = useRef(null); // gallery / files
+  const cameraInputRef = useRef(null); // forces the camera
 
   useEffect(() => {
     (async () => {
@@ -213,14 +214,25 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
         <div className="item-quick-actions">
           <button className="btn small" onClick={markWatered}><i className="bi bi-droplet"></i> Watered</button>
           <button className="btn small" onClick={markFertilized}><i className="bi bi-flower2"></i> Fertilized</button>
+          <button className="btn small" onClick={() => cameraInputRef.current.click()} disabled={busy}>
+            <i className="bi bi-camera"></i> {busy ? "Analyzing…" : "Camera"}
+          </button>
           <button className="btn small" onClick={() => fileInputRef.current.click()} disabled={busy}>
-            <i className="bi bi-camera"></i> {busy ? "Analyzing…" : "Add photo"}
+            <i className="bi bi-images"></i> Gallery
           </button>
           <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots"></i> Ask Sprout</button>
           <button className="btn btn-ghost small" onClick={() => onNavigate("codex", { query: plant.name })}>
             <i className="bi bi-book"></i> Codex
           </button>
         </div>
+        <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          style={{ display: "none" }}
+          onChange={onPhotoChosen}
+        />
         <input
           ref={fileInputRef}
           type="file"
