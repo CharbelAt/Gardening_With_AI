@@ -319,13 +319,23 @@ function tagsLabel(item) {
 // prompt so the AI knows the user's current garden state without needing
 // any tool-calling machinery just to read data.
 async function buildKnowledgeContext() {
-  const [tools, routines, plants] = await Promise.all([
+  const [tools, routines, plants, shopping] = await Promise.all([
     getAllTools(),
     getAllRoutines(),
     getAllPlants(),
+    getAllShoppingItems(),
   ]);
 
   const parts = [];
+
+  if (shopping.length) {
+    parts.push(
+      "To-get list (shopping): " +
+        shopping
+          .map((s) => `id:${s.id} "${s.name}" x${s.quantity}${s.done ? " [BOUGHT]" : " [open]"}`)
+          .join(", ")
+    );
+  }
 
   if (tools.length) {
     parts.push(
@@ -398,6 +408,9 @@ const ACTION_CONVENTIONS =
   'COMPLETE_ROUTINE: {"id": <routine id>}\n' +
   'ATTACH_PHOTO: {"plantId": <plant id>, "photoId": <optional N from "[shared photo #N]" — omit for the newest photo in this chat>}\n' +
   'SET_COVER: {"target": "plant"|"tool"|"routine", "id": <item id>, "photoId": <optional, as above>} — makes a chat photo the item\'s cover picture\n' +
+  'ADD_TOGET: {"fields": {"name": "...", "quantity": 1, "notes": "..."}} — puts something on the to-get (shopping) list\n' +
+  'UPDATE_TOGET: {"id": <to-get id>, "fields": {"done": true, "quantity": 2, "name": "..."}}\n' +
+  'REMOVE_TOGET: {"id": <to-get id>}\n' +
   "WORKED EXAMPLES:\n" +
   'User says: "I bought 2 bags of tomato fertilizer and planted mint in the balcony pot" — ' +
   "your reply chats normally, then ends with these two lines:\n" +
@@ -431,22 +444,39 @@ const ACTION_CONVENTIONS =
   PRESET_TAGS.routines.join("/") +
   ". Invent a short lowercase tag only when none fit.\n" +
   "- If you are UNSURE which item the user means, or whether they really want a change: ask a short clarifying question in your visible reply and emit NO action line for that change.\n" +
+  '- To-get list: "I need to buy X" / "remind me to get X" → ADD_TOGET. When the user says ' +
+  "they BOUGHT something that's on the list: UPDATE_TOGET with done true AND ADD_TOOL so it " +
+  "lands in their inventory.\n" +
   "- Never invent changes the user didn't ask for, and don't re-emit an action already applied " +
   "earlier in the conversation. BUT when the user explicitly asks you to create demo/sample/" +
-  "example data, that IS a real request — emit one action line per item you create.";
+  "example data, that IS a real request — emit one action line per item you create.\n" +
+  "- COMPLETION FLAG (mandatory): the VERY LAST line of EVERY reply must be exactly " +
+  "STATUS: done — or STATUS: continue if you could not finish everything in this reply " +
+  "(too many items, ran out of space). On STATUS: continue the app immediately asks you to " +
+  "keep going: emit ONLY the remaining action lines (no repeats), then STATUS: done. " +
+  "Never leave a request partially handled without flagging continue.";
 
 // Short reminder appended AFTER the conversation history — models weight the
 // end of the context most, and this is what finally made "add X" reliably act
 // in the SAME reply instead of a later one.
 const ACTION_REMINDER =
   "REMINDER — check before you answer: does the user's latest message ask to add, update, " +
-  "remove, log, note, or track anything (plant, tool, routine, watering, purchase), to create " +
-  "demo/sample data (allowed — one action line per item), or to attach a photo they sent to a " +
-  "plant (use ATTACH_PHOTO — you CAN do this)? " +
+  "remove, log, note, or track anything (plant, tool, routine, to-get/shopping item, watering, " +
+  "purchase), to create demo/sample data (allowed — one action line per item), or to attach a " +
+  "photo they sent to a plant (ATTACH_PHOTO) or set a cover (SET_COVER — you CAN do these)? " +
   "If yes: end THIS reply with the matching action line(s), exactly per the formulas in your " +
   "instructions — act now, in this reply, never later. If unsure which item they mean, ask " +
   "instead and emit nothing. If a change was already applied earlier in the conversation, " +
-  "don't re-emit it. Never claim a change without its action line in this same reply.";
+  "don't re-emit it. Never claim a change without its action line in this same reply. " +
+  "Finally: your very last line must be STATUS: done, or STATUS: continue if work remains.";
+
+// Injected on automatic continuation rounds (previous reply flagged
+// STATUS: continue) — keeps the model finishing instead of repeating.
+const CONTINUE_NUDGE =
+  "Your previous reply flagged STATUS: continue — the request is NOT finished. Continue NOW: " +
+  "emit ONLY the remaining action lines (never repeat ones already emitted), keep the visible " +
+  "text to one short sentence, and end with STATUS: done when everything is complete " +
+  "(or STATUS: continue if there is still more).";
 
 // Client-side intent router (user request: "thinking models for questions,
 // acting models for acting"). Command-looking messages take the FAST chain
@@ -540,9 +570,28 @@ const ACTION_TYPE_MAP = {
   COMPLETE_ROUTINE: "complete_routine",
   ATTACH_PHOTO: "attach_photo",
   SET_COVER: "set_cover",
+  ADD_TOGET: "add_toget",
+  UPDATE_TOGET: "update_toget",
+  REMOVE_TOGET: "remove_toget",
 };
 const ACTION_START_RE =
-  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|ATTACH_PHOTO|SET_COVER)\**[ \t]*:[ \t\n]*\{/g;
+  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|ATTACH_PHOTO|SET_COVER|ADD_TOGET|UPDATE_TOGET|REMOVE_TOGET)\**[ \t]*:[ \t\n]*\{/g;
+
+// Completion flag: every reply is asked to end with STATUS: done|continue.
+// "continue" makes the chat immediately re-prompt so no request is ever left
+// half-finished. Absent flag = done (older replies, small models).
+const STATUS_LINE_RE = /(?:^|\n)[ \t>*`-]*STATUS\**[ \t]*:[ \t]*(done|continue)[ \t.`*]*(?=\n|$)/gi;
+
+function extractStatus(text) {
+  let status = null;
+  const cleanText = (text || "")
+    .replace(STATUS_LINE_RE, (_, s) => {
+      status = s.toLowerCase();
+      return "";
+    })
+    .trim();
+  return { cleanText, status };
+}
 
 // Walks a balanced {...} starting at openIdx (string-aware, so braces inside
 // quoted values don't confuse it). Returns the index AFTER the closing brace,
@@ -656,6 +705,20 @@ async function resolvePhotoTarget(action, ctx) {
     if (byId) return byId;
   }
   return photos[photos.length - 1]; // newest
+}
+
+async function resolveShoppingTarget(action) {
+  const items = await getAllShoppingItems();
+  if (action.id != null) {
+    const byId = items.find((s) => s.id === Number(action.id));
+    if (byId) return byId;
+  }
+  if (action.name) {
+    const lower = action.name.toLowerCase();
+    const byName = items.find((s) => (s.name || "").toLowerCase().includes(lower));
+    if (byName) return byName;
+  }
+  return null;
 }
 
 async function resolveRoutineTarget(action) {
@@ -776,6 +839,22 @@ async function applySetCover(kindName, item, photoMsg) {
   }
 }
 
+async function applyShoppingAdd(fields) {
+  await addShoppingItem({
+    name: fields.name || "New item",
+    quantity: Number(fields.quantity) || 1,
+    notes: fields.notes || "",
+    done: !!fields.done,
+  });
+}
+
+async function applyShoppingUpdate(item, fields) {
+  const updated = { ...item, ...fields };
+  if (fields.quantity != null) updated.quantity = Math.max(1, Number(fields.quantity) || 1);
+  if (fields.done != null) updated.done = !!fields.done;
+  await updateShoppingItem(updated);
+}
+
 async function applyRoutineAdd(fields) {
   await addRoutine({
     task: fields.task || "New routine",
@@ -846,6 +925,16 @@ async function resolveAction(action, ctx) {
       return { type: "add_tool", fields: action.fields || {} };
     case "add_routine":
       return { type: "add_routine", fields: action.fields || {} };
+    case "add_toget":
+      return { type: "add_toget", fields: action.fields || {} };
+    case "update_toget": {
+      const item = await resolveShoppingTarget(action);
+      return item ? { type: "update_toget", item, fields: action.fields || {} } : null;
+    }
+    case "remove_toget": {
+      const item = await resolveShoppingTarget(action);
+      return item ? { type: "remove_toget", item } : null;
+    }
     case "update": {
       const plant = await resolvePlantTarget(action);
       return plant ? { type: "update_plant", plant, fields: action.fields || {} } : null;
@@ -897,6 +986,14 @@ function describeAction(a) {
       return `Add the chat photo to "${a.plant.name}"'s gallery`;
     case "set_cover":
       return `Set the chat photo as the cover of ${a.kindName} "${a.item.name || a.item.task}"`;
+    case "add_toget":
+      return `Add "${a.fields.name || "New item"}" to the to-get list`;
+    case "update_toget":
+      return a.fields && a.fields.done
+        ? `Check off "${a.item.name}" on the to-get list`
+        : `Update to-get "${a.item.name}": ${fieldsText(a.fields)}`;
+    case "remove_toget":
+      return `Remove "${a.item.name}" from the to-get list`;
     default:
       return "Unknown change";
   }
@@ -924,6 +1021,12 @@ async function applyResolvedAction(a) {
       return applyAttachPhoto(a.plant, a.photoMsg);
     case "set_cover":
       return applySetCover(a.kindName, a.item, a.photoMsg);
+    case "add_toget":
+      return applyShoppingAdd(a.fields);
+    case "update_toget":
+      return applyShoppingUpdate(a.item, a.fields);
+    case "remove_toget":
+      return deleteShoppingItem(a.item.id);
   }
 }
 

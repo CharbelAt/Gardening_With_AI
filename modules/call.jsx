@@ -144,7 +144,8 @@ function CallBar({ chatId, messages, setMessages, onClose, pendingSetter, onAppl
         messages: await buildContextMessages(nextHistory, "call"),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
-      const reply = cleanText || "Sorry, I didn't catch that.";
+      const { cleanText: spokenText } = extractStatus(cleanText); // never speak the STATUS flag
+      const reply = spokenText || "Sorry, I didn't catch that.";
       // Act FIRST (IndexedDB writes are instant), then speak — so by the time
       // Sprout says "done", it's actually done. In confirm mode the actions
       // queue into the chat's confirm banner instead of being dropped.

@@ -33,11 +33,13 @@ function App() {
     if (meta) meta.setAttribute("content", theme === "dark" ? "#101510" : "#2e6b34");
   }, [theme]);
 
-  // Keep the "due" badge on the Routines nav item fresh — cheap IndexedDB
-  // read, refreshed whenever the user changes views.
+  // Keep the nav badges fresh (due routines + open to-get items) — cheap
+  // IndexedDB reads, refreshed whenever the user changes views.
+  const [togetCount, setTogetCount] = useState(0);
   async function refreshDueCount() {
-    const routines = await getAllRoutines();
+    const [routines, shopping] = await Promise.all([getAllRoutines(), getAllShoppingItems()]);
     setDueCount(routines.filter(isRoutineDue).length);
+    setTogetCount(shopping.filter((s) => !s.done).length);
   }
   useEffect(() => {
     refreshDueCount();
@@ -180,7 +182,7 @@ function App() {
         {view === "codex" && <CodexView initialQuery={codexQuery} onNavigate={navigate} />}
       </main>
 
-      <BottomNav view={view} onNavigate={navigate} dueCount={dueCount} />
+      <BottomNav view={view} onNavigate={navigate} dueCount={dueCount} togetCount={togetCount} />
 
       {showChatList && (
         <ChatListModal

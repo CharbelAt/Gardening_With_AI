@@ -1,13 +1,14 @@
 // Minimal IndexedDB wrapper — this IS the app's "memory". Everything here stays
 // on this device/browser only (no server-side sync).
 const DB_NAME = "garden-companion";
-const DB_VERSION = 4; // v4 adds the saved-codex-entries store
+const DB_VERSION = 5; // v5 adds the to-get shopping list store
 const STORE_MESSAGES = "messages";
 const STORE_TOOLS = "tools";
 const STORE_ROUTINES = "routines";
 const STORE_PLANTS = "plants";
 const STORE_CHATS = "chats";
 const STORE_CODEX = "codex";
+const STORE_SHOPPING = "shopping";
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -31,6 +32,9 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains(STORE_CODEX)) {
         db.createObjectStore(STORE_CODEX, { keyPath: "id", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains(STORE_SHOPPING)) {
+        db.createObjectStore(STORE_SHOPPING, { keyPath: "id", autoIncrement: true });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -210,6 +214,31 @@ function deleteCodexEntry(id) {
 }
 function clearAllCodexEntries() {
   return clearStore(STORE_CODEX);
+}
+
+// ---------- to-get list (shopping checklist) ----------
+
+// item: { name, quantity, notes, done: boolean, createdAt }
+function addShoppingItem(item) {
+  return addRecord(STORE_SHOPPING, {
+    name: item.name || "",
+    quantity: Number(item.quantity) || 1,
+    notes: item.notes || "",
+    done: !!item.done,
+    createdAt: Date.now(),
+  });
+}
+function getAllShoppingItems() {
+  return getAllRecords(STORE_SHOPPING);
+}
+function updateShoppingItem(item) {
+  return putRecord(STORE_SHOPPING, item);
+}
+function deleteShoppingItem(id) {
+  return deleteRecord(STORE_SHOPPING, id);
+}
+function clearAllShoppingItems() {
+  return clearStore(STORE_SHOPPING);
 }
 
 // ---------- routines (recurring care tasks) ----------

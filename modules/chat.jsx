@@ -71,19 +71,38 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     setMessages(nextHistory);
     setBusy(true);
     try {
-      const data = await apiFetch("/api/chat", {
-        // Router: commands take the fast "act" chain, questions the smart one.
-        mode: detectChatMode(text),
-        messages: await buildContextMessages(nextHistory, "chat"),
-      });
-      const { cleanText, actions } = extractActions(data.reply || "");
-      // Apply the AI's changes FIRST, then show its reply — by the time the
-      // user reads "added!", the item is already in the module.
-      const res = await handleAiActions(actions, setPendingActions, { chatId });
-      flashApplied(res);
-      const aiMsg = { chatId, role: "assistant", kind: "text", text: cleanText, createdAt: Date.now() };
-      aiMsg.id = await addMessage(aiMsg);
-      setMessages((prev) => [...prev, aiMsg]);
+      // Completion loop: every reply carries a hidden STATUS flag. On
+      // "continue" (couldn't finish — long task, ran out of space) the app
+      // IMMEDIATELY re-prompts, escalating to the smart chain, until
+      // STATUS: done — capped at 3 rounds so it can never spin forever.
+      let history = nextHistory;
+      for (let round = 0; round < 3; round++) {
+        const msgs = await buildContextMessages(history, "chat");
+        if (round > 0) msgs.push({ role: "system", content: CONTINUE_NUDGE });
+        const data = await apiFetch("/api/chat", {
+          // Router: commands take the fast "act" chain, questions the smart
+          // one; continuation rounds always use the smart chain.
+          mode: round === 0 ? detectChatMode(text) : "chat",
+          messages: msgs,
+        });
+        const { cleanText, actions } = extractActions(data.reply || "");
+        const { cleanText: shownText, status } = extractStatus(cleanText);
+        // Apply the AI's changes FIRST, then show its reply — by the time the
+        // user reads "added!", the item is already in the module.
+        const res = await handleAiActions(actions, setPendingActions, { chatId });
+        flashApplied(res);
+        const aiMsg = {
+          chatId,
+          role: "assistant",
+          kind: "text",
+          text: shownText || "Working on it…",
+          createdAt: Date.now(),
+        };
+        aiMsg.id = await addMessage(aiMsg);
+        history = [...history, aiMsg];
+        setMessages((prev) => [...prev, aiMsg]);
+        if (status !== "continue") break;
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -100,9 +119,10 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     try {
       const data = await apiFetch("/api/chat", { mode: "chat", messages: await buildContextMessages(historyUpTo, "chat") });
       const { cleanText, actions } = extractActions(data.reply || "");
+      const { cleanText: shownText } = extractStatus(cleanText);
       const res = await handleAiActions(actions, setPendingActions, { chatId }); // act first
       flashApplied(res);
-      const updated = { ...msg, text: cleanText };
+      const updated = { ...msg, text: shownText };
       await updateMessage(updated);
       setMessages((prev) => prev.map((m) => (m.id === msg.id ? updated : m)));
     } catch (e) {
@@ -153,9 +173,10 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         prompt: await buildChatVisionPrompt(text),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
+      const { cleanText: shownText } = extractStatus(cleanText);
       const res = await handleAiActions(actions, setPendingActions, { chatId }); // act first
       flashApplied(res);
-      const aiMsg = { chatId, role: "assistant", kind: "text", text: cleanText, createdAt: Date.now() };
+      const aiMsg = { chatId, role: "assistant", kind: "text", text: shownText, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
     } catch (e) {

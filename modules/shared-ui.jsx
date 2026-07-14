@@ -80,6 +80,7 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
     await clearAllTools();
     await clearAllRoutines();
     await clearAllCodexEntries();
+    await clearAllShoppingItems();
     setConfirmClear(false);
     onCleared();
   }
@@ -375,7 +376,7 @@ const NAV_ITEMS = [
   { key: "codex", label: "Codex", icon: "bi-book" },
 ];
 
-function BottomNav({ view, onNavigate, dueCount }) {
+function BottomNav({ view, onNavigate, dueCount, togetCount }) {
   const activeKey = view;
   return (
     <nav className="bottom-nav">
@@ -389,6 +390,9 @@ function BottomNav({ view, onNavigate, dueCount }) {
             <i className={`bi ${item.icon}`}></i>
             {item.key === "routines" && dueCount > 0 && (
               <span className="nav-badge">{dueCount > 9 ? "9+" : dueCount}</span>
+            )}
+            {item.key === "inventory" && togetCount > 0 && (
+              <span className="nav-badge">{togetCount > 9 ? "9+" : togetCount}</span>
             )}
           </span>
           <span className="bottom-nav-label">{item.label}</span>
@@ -417,7 +421,7 @@ function HelpModal({ onClose }) {
           <h3>Routines</h3>
           <p>Recurring care tasks with a "Due" badge when overdue (also shown on the bottom bar). Link a routine to a plant with a care action — marking "Water the ficus" done then updates the ficus's watering record automatically.</p>
           <h3>Inventory</h3>
-          <p>Your tools and supplies as cards — tap one for details or to edit it. Telling Sprout what you bought or used up keeps this in sync too.</p>
+          <p>Your tools and supplies as cards — tap one for details or to edit it. Telling Sprout what you bought or used up keeps this in sync too. The "To get" tab is your shopping checklist: add items there (or say "I need to buy…"), check them off when bought, and move them straight into your inventory. Open items show as a badge on the Inventory tab.</p>
           <h3>Tags</h3>
           <p>Plants, tools, and routines can all be tagged (e.g. "herb", "pesticide", "watering") — pick preset tags or type your own when adding/editing, and Sprout tags things it adds for you. Tap a tag in the bar above any grid to filter by it.</p>
           <h3>Codex</h3>

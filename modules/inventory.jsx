@@ -274,16 +274,48 @@ function InventoryView({ initialId, onNavigate }) {
   const [selectedId, setSelectedId] = useState(initialId || null);
   const [showAdd, setShowAdd] = useState(false);
   const [activeTag, setActiveTag] = useState(null);
+  const [section, setSection] = useState("items"); // items | toget
+  const [shopping, setShopping] = useState([]);
+  const [newToGet, setNewToGet] = useState("");
 
   async function refresh() {
     setTools(await getAllTools());
   }
+  async function refreshShopping() {
+    setShopping(await getAllShoppingItems());
+  }
   useEffect(() => {
     refresh();
+    refreshShopping();
   }, []);
 
   const selected = tools.find((t) => t.id === selectedId) || null;
   const visible = activeTag ? tools.filter((t) => (t.tags || []).includes(activeTag)) : tools;
+  const openCount = shopping.filter((s) => !s.done).length;
+
+  async function addToGet() {
+    const n = newToGet.trim();
+    if (!n) return;
+    await addShoppingItem({ name: n });
+    setNewToGet("");
+    refreshShopping();
+  }
+  async function toggleToGet(s) {
+    await updateShoppingItem({ ...s, done: !s.done });
+    refreshShopping();
+  }
+  async function removeToGet(s) {
+    await deleteShoppingItem(s.id);
+    refreshShopping();
+  }
+  // Bought it → it becomes a real inventory item (and gets codex research).
+  async function moveToInventory(s) {
+    await addTool({ name: s.name, quantity: s.quantity || 1, notes: s.notes || "", tags: [] });
+    ensureCodexResearch("tool", s.name);
+    await deleteShoppingItem(s.id);
+    refreshShopping();
+    refresh();
+  }
 
   if (selected) {
     return (
@@ -300,34 +332,96 @@ function InventoryView({ initialId, onNavigate }) {
     <div className="tab-panel">
       <div className="view-header">
         <h2><i className="bi bi-box-seam"></i> Inventory</h2>
-        <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add item"><i className="bi bi-plus-lg"></i></button>
+        {section === "items" && (
+          <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add item"><i className="bi bi-plus-lg"></i></button>
+        )}
       </div>
-      <TagFilterBar items={tools} activeTag={activeTag} onSelect={setActiveTag} />
-      <div className="item-grid">
-        {tools.length === 0 && (
-          <div className="empty-state">
-            <i className="bi bi-box-seam"></i>
-            <p>No tools or supplies yet — tap + to add one, or tell Sprout what you bought.</p>
-          </div>
-        )}
-        {visible.length === 0 && tools.length > 0 && (
-          <p className="empty-hint">No items tagged "{activeTag}".</p>
-        )}
-        {visible.map((t) => (
-          <button key={t.id} className="item-card" onClick={() => setSelectedId(t.id)}>
-            {t.photoThumb ? (
-              <img src={t.photoThumb} alt={t.name} />
-            ) : (
-              <div className="item-card-placeholder"><i className="bi bi-tools"></i></div>
+
+      <div className="tag-filter-bar">
+        <button className={section === "items" ? "tag-chip active" : "tag-chip"} onClick={() => setSection("items")}>
+          Items
+        </button>
+        <button className={section === "toget" ? "tag-chip active" : "tag-chip"} onClick={() => setSection("toget")}>
+          To get{openCount > 0 ? ` (${openCount})` : ""}
+        </button>
+      </div>
+
+      {section === "items" ? (
+        <React.Fragment>
+          <TagFilterBar items={tools} activeTag={activeTag} onSelect={setActiveTag} />
+          <div className="item-grid">
+            {tools.length === 0 && (
+              <div className="empty-state">
+                <i className="bi bi-box-seam"></i>
+                <p>No tools or supplies yet — tap + to add one, or tell Sprout what you bought.</p>
+              </div>
             )}
-            <span className="item-card-title">{t.name || "Unnamed item"}</span>
-            <span className="item-card-sub">
-              × {t.quantity}
-              {t.condition ? ` · ${t.condition}` : ""}
-            </span>
-          </button>
-        ))}
-      </div>
+            {visible.length === 0 && tools.length > 0 && (
+              <p className="empty-hint">No items tagged "{activeTag}".</p>
+            )}
+            {visible.map((t) => (
+              <button key={t.id} className="item-card" onClick={() => setSelectedId(t.id)}>
+                {t.photoThumb ? (
+                  <img src={t.photoThumb} alt={t.name} />
+                ) : (
+                  <div className="item-card-placeholder"><i className="bi bi-tools"></i></div>
+                )}
+                <span className="item-card-title">{t.name || "Unnamed item"}</span>
+                <span className="item-card-sub">
+                  × {t.quantity}
+                  {t.condition ? ` · ${t.condition}` : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+        </React.Fragment>
+      ) : (
+        <div className="toget-panel">
+          <div className="toget-add">
+            <input
+              className="text-input"
+              placeholder="Add something to get…"
+              value={newToGet}
+              onChange={(e) => setNewToGet(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addToGet()}
+            />
+            <button className="btn btn-send" onClick={addToGet} disabled={!newToGet.trim()} title="Add">
+              <i className="bi bi-plus-lg"></i>
+            </button>
+          </div>
+          {shopping.length === 0 && (
+            <div className="empty-state">
+              <i className="bi bi-cart"></i>
+              <p>Nothing to get — add items here, or tell Sprout "I need to buy…".</p>
+            </div>
+          )}
+          {[...shopping]
+            .sort((a, b) => (a.done ? 1 : 0) - (b.done ? 1 : 0) || b.id - a.id)
+            .map((s) => (
+              <div key={s.id} className={s.done ? "toget-row done" : "toget-row"}>
+                <button className="toget-check" onClick={() => toggleToGet(s)} title={s.done ? "Uncheck" : "Check off"}>
+                  <i className={s.done ? "bi bi-check-square-fill" : "bi bi-square"}></i>
+                </button>
+                <div className="toget-text">
+                  <span className="toget-name">
+                    {s.name}
+                    {s.quantity > 1 ? ` ×${s.quantity}` : ""}
+                  </span>
+                  {s.notes && <span className="toget-notes">{s.notes}</span>}
+                </div>
+                {s.done && (
+                  <button className="btn btn-ghost small" onClick={() => moveToInventory(s)} title="Move to inventory">
+                    <i className="bi bi-box-seam"></i> To inventory
+                  </button>
+                )}
+                <button className="icon-btn small" onClick={() => removeToGet(s)} title="Remove">
+                  <i className="bi bi-trash"></i>
+                </button>
+              </div>
+            ))}
+        </div>
+      )}
+
       {showAdd && (
         <AddToolModal
           onClose={() => setShowAdd(false)}
