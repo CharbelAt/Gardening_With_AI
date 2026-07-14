@@ -74,6 +74,9 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   }, [plant.id]);
 
   const latestPhoto = (plant.photoHistory || []).filter((p) => p.imageThumb).slice(-1)[0];
+  // Cover (set by the AI via SET_COVER) wins over the newest gallery photo.
+  const heroSrc = plant.coverThumb || (latestPhoto && latestPhoto.imageThumb) || null;
+  const heroCaption = plant.coverThumb ? plant.name : latestPhoto && latestPhoto.analysis;
 
   async function saveForm() {
     await updatePlant({ ...plant, ...form, tags: normTags(form.tags) });
@@ -82,11 +85,13 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   }
 
   async function markWatered() {
-    await updatePlant(withLogEntry({ ...plant, lastWatered: Date.now() }, "Watered", "water"));
+    // withCareLogEntry: tapping repeatedly updates the timestamp but only
+    // logs one "Watered" row per day — no more log spam.
+    await updatePlant(withCareLogEntry({ ...plant, lastWatered: Date.now() }, "Watered", "water"));
     onChanged();
   }
   async function markFertilized() {
-    await updatePlant(withLogEntry({ ...plant, lastFertilized: Date.now() }, "Fertilized", "fertilize"));
+    await updatePlant(withCareLogEntry({ ...plant, lastFertilized: Date.now() }, "Fertilized", "fertilize"));
     onChanged();
   }
 
@@ -195,9 +200,9 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
       </div>
 
       <div className="item-detail">
-        {latestPhoto ? (
-          <button className="detail-hero" onClick={() => setLightbox({ src: latestPhoto.imageThumb, caption: latestPhoto.analysis })}>
-            <img src={latestPhoto.imageThumb} alt={plant.name} />
+        {heroSrc ? (
+          <button className="detail-hero" onClick={() => setLightbox({ src: heroSrc, caption: heroCaption })}>
+            <img src={heroSrc} alt={plant.name} />
           </button>
         ) : (
           <div className="detail-hero placeholder"><i className="bi bi-flower3"></i></div>
@@ -397,10 +402,11 @@ function GardenView({ initialId, onNavigate }) {
         )}
         {visible.map((p) => {
           const lastImg = (p.photoHistory || []).filter((h) => h.imageThumb).slice(-1)[0];
+          const cardSrc = p.coverThumb || (lastImg && lastImg.imageThumb) || null;
           return (
             <button key={p.id} className="item-card" onClick={() => setSelectedId(p.id)}>
-              {lastImg ? (
-                <img src={lastImg.imageThumb} alt={p.name} />
+              {cardSrc ? (
+                <img src={cardSrc} alt={p.name} />
               ) : (
                 <div className="item-card-placeholder"><i className="bi bi-flower3"></i></div>
               )}

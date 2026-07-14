@@ -397,6 +397,7 @@ const ACTION_CONVENTIONS =
   'UPDATE_ROUTINE: {"id": <routine id>, "fields": {"task": "...", "intervalDays": 5, "tags": ["..."]}}\n' +
   'COMPLETE_ROUTINE: {"id": <routine id>}\n' +
   'ATTACH_PHOTO: {"plantId": <plant id>, "photoId": <optional N from "[shared photo #N]" — omit for the newest photo in this chat>}\n' +
+  'SET_COVER: {"target": "plant"|"tool"|"routine", "id": <item id>, "photoId": <optional, as above>} — makes a chat photo the item\'s cover picture\n' +
   "WORKED EXAMPLES:\n" +
   'User says: "I bought 2 bags of tomato fertilizer and planted mint in the balcony pot" — ' +
   "your reply chats normally, then ends with these two lines:\n" +
@@ -413,8 +414,11 @@ const ACTION_CONVENTIONS =
   "to a later turn. A reply that claims a change but has no action line is a failure.\n" +
   "- ALWAYS act on explicit commands — add, remove, update, note, log, track, remember — with the matching action line(s).\n" +
   '- Photos the user sent in this chat appear as "[shared photo #N]". You CAN put them in a ' +
-  "plant's gallery with ATTACH_PHOTO — the app holds the image itself. NEVER say a photo " +
-  '"wasn\'t uploaded", that you "can\'t access it", or that you "need a URL".\n' +
+  "plant's gallery with ATTACH_PHOTO, and set them as the cover picture of any plant, tool, " +
+  "or routine with SET_COVER — the app holds the image itself. NEVER say a photo " +
+  '"wasn\'t uploaded", that you "can\'t access it", or that you "need a URL". When the user ' +
+  "shares a clear photo of one of their items that has no picture yet, you may proactively " +
+  "SET_COVER it (mention that you did).\n" +
   '- "notes" REPLACES the old notes: to add a note, repeat the existing notes and append the new one (see example).\n' +
   "- Use real ids from the garden data above. Only include fields that actually change. Never leave <placeholders> in the JSON.\n" +
   "- Dates: use the device date given above. When the user watered/fertilized a plant: UPDATE_PLANT with that date, plus COMPLETE_ROUTINE if a matching routine exists.\n" +
@@ -467,7 +471,7 @@ async function buildContextMessages(history, mode) {
     SYSTEM_PROMPT_BASE +
     ` The user's device says it is now: ${deviceNow()}.` +
     (mode === "call"
-      ? " The user is talking to you by voice on a phone call — keep replies short (1-3 sentences), conversational, and easy to read aloud. Never use markdown, bullet points, or emoji."
+      ? " The user is talking to you by voice on a phone call — keep replies short (1-3 sentences), conversational, and easy to read aloud. Never use markdown, bullet points, or emoji in the SPOKEN text. IMPORTANT: the hidden action lines are NOT spoken and are NOT markdown — they are stripped by the app before text-to-speech. Voice commands (add/update/watered/bought…) MUST still end your reply with their action lines, exactly like in text chat."
       : "") +
     knowledge +
     ACTION_CONVENTIONS;
@@ -535,9 +539,10 @@ const ACTION_TYPE_MAP = {
   UPDATE_ROUTINE: "update_routine",
   COMPLETE_ROUTINE: "complete_routine",
   ATTACH_PHOTO: "attach_photo",
+  SET_COVER: "set_cover",
 };
 const ACTION_START_RE =
-  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|ATTACH_PHOTO)\**[ \t]*:[ \t\n]*\{/g;
+  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|ATTACH_PHOTO|SET_COVER)\**[ \t]*:[ \t\n]*\{/g;
 
 // Walks a balanced {...} starting at openIdx (string-aware, so braces inside
 // quoted values don't confuse it). Returns the index AFTER the closing brace,
@@ -676,6 +681,15 @@ function withLogEntry(plant, text, kind) {
   };
 }
 
+// Same, but spam-proof: repeated waterings/fertilizings within 24h update the
+// plant's timestamp without piling up duplicate log rows.
+function withCareLogEntry(plant, text, kind) {
+  const hist = plant.photoHistory || [];
+  const last = [...hist].reverse().find((h) => h.kind === kind);
+  if (last && daysSince(last.date) === 0) return plant; // already logged today
+  return withLogEntry(plant, text, kind);
+}
+
 async function applyPlantUpdate(plant, fields) {
   const changeSummary = Object.entries(fields)
     .filter(([k]) => k !== "lastWatered" && k !== "lastFertilized")
@@ -742,6 +756,26 @@ async function applyAttachPhoto(plant, photoMsg) {
   });
 }
 
+// Sets a chat photo as an item's cover picture. Plants use coverThumb (shown
+// on card + detail hero, overriding the latest gallery photo) and also get
+// the photo into their gallery; tools/routines use photoThumb.
+async function applySetCover(kindName, item, photoMsg) {
+  if (kindName === "plant") {
+    await updatePlant({
+      ...item,
+      coverThumb: photoMsg.imageThumb,
+      photoHistory: [
+        ...(item.photoHistory || []),
+        { imageThumb: photoMsg.imageThumb, analysis: "Cover photo (from chat)", date: Date.now(), kind: "photo" },
+      ],
+    });
+  } else if (kindName === "tool") {
+    await updateTool({ ...item, photoThumb: photoMsg.imageThumb });
+  } else {
+    await updateRoutine({ ...item, photoThumb: photoMsg.imageThumb });
+  }
+}
+
 async function applyRoutineAdd(fields) {
   await addRoutine({
     task: fields.task || "New routine",
@@ -769,9 +803,9 @@ async function completeRoutine(routine) {
   const plant = plants.find((p) => p.id === routine.plantId);
   if (!plant) return;
   if (routine.careAction === "water") {
-    await updatePlant(withLogEntry({ ...plant, lastWatered: Date.now() }, `Watered (routine: ${routine.task})`, "water"));
+    await updatePlant(withCareLogEntry({ ...plant, lastWatered: Date.now() }, `Watered (routine: ${routine.task})`, "water"));
   } else if (routine.careAction === "fertilize") {
-    await updatePlant(withLogEntry({ ...plant, lastFertilized: Date.now() }, `Fertilized (routine: ${routine.task})`, "fertilize"));
+    await updatePlant(withCareLogEntry({ ...plant, lastFertilized: Date.now() }, `Fertilized (routine: ${routine.task})`, "fertilize"));
   }
 }
 
@@ -788,6 +822,23 @@ async function resolveAction(action, ctx) {
       if (!plant) return null;
       const photoMsg = await resolvePhotoTarget(action, ctx);
       return photoMsg ? { type: "attach_photo", plant, photoMsg } : null;
+    }
+    case "set_cover": {
+      const t = String(action.target || "plant").toLowerCase();
+      let item = null;
+      let kindName = "plant";
+      if (t === "tool") {
+        item = await resolveToolTarget(action);
+        kindName = "tool";
+      } else if (t === "routine") {
+        item = await resolveRoutineTarget(action);
+        kindName = "routine";
+      } else {
+        item = await resolvePlantTarget(action);
+      }
+      if (!item) return null;
+      const photoMsg = await resolvePhotoTarget(action, ctx);
+      return photoMsg ? { type: "set_cover", kindName, item, photoMsg } : null;
     }
     case "add":
       return { type: "add_plant", fields: action.fields || {} };
@@ -844,6 +895,8 @@ function describeAction(a) {
       return `Mark routine "${a.routine.task}" done`;
     case "attach_photo":
       return `Add the chat photo to "${a.plant.name}"'s gallery`;
+    case "set_cover":
+      return `Set the chat photo as the cover of ${a.kindName} "${a.item.name || a.item.task}"`;
     default:
       return "Unknown change";
   }
@@ -869,6 +922,8 @@ async function applyResolvedAction(a) {
       return completeRoutine(a.routine);
     case "attach_photo":
       return applyAttachPhoto(a.plant, a.photoMsg);
+    case "set_cover":
+      return applySetCover(a.kindName, a.item, a.photoMsg);
   }
 }
 

@@ -12,7 +12,10 @@
 // spoken (isLikelyEcho) and needs a minimum length before it counts as a real
 // interruption. statusRef (not React state) still drives all handler logic.
 
-function CallBar({ chatId, messages, setMessages, onClose }) {
+// pendingSetter/onApplied come from ChatTab: voice-command actions land in the
+// SAME confirm banner (confirm mode) and "✓ Applied" toast (auto mode) as
+// typed ones — previously confirm mode silently dropped voice commands.
+function CallBar({ chatId, messages, setMessages, onClose, pendingSetter, onApplied }) {
   const SpeechRecognitionCtor =
     window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -143,9 +146,10 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
       const { cleanText, actions } = extractActions(data.reply || "");
       const reply = cleanText || "Sorry, I didn't catch that.";
       // Act FIRST (IndexedDB writes are instant), then speak — so by the time
-      // Sprout says "done", it's actually done. Calls apply updates only in
-      // auto mode (handleAiActions skips writes in confirm mode when passed null).
-      await handleAiActions(actions, null, { chatId });
+      // Sprout says "done", it's actually done. In confirm mode the actions
+      // queue into the chat's confirm banner instead of being dropped.
+      const res = await handleAiActions(actions, pendingSetter || null, { chatId });
+      if (onApplied) onApplied(res);
       const aiMsg = { chatId, role: "assistant", kind: "text", text: reply, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);

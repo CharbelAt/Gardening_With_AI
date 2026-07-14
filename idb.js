@@ -215,7 +215,8 @@ function clearAllCodexEntries() {
 // ---------- routines (recurring care tasks) ----------
 
 // routine: { task, intervalDays, lastDone: timestamp|null, createdAt,
-//            plantId?: number|null, careAction?: ''|'water'|'fertilize', tags: [string] }
+//            plantId?: number|null, careAction?: ''|'water'|'fertilize', tags: [string],
+//            photoThumb?: dataURL|null (cover picture, set by AI SET_COVER) }
 // plantId/careAction link a routine to a plant: marking the routine done also
 // stamps that plant's lastWatered/lastFertilized and appends to its history log
 // (see completeRoutine in modules/helpers.jsx).
@@ -243,7 +244,8 @@ function isRoutineDue(routine) {
 // ---------- plants ----------
 
 // plant: { name, notes, plantingDate, location, lastWatered, lastFertilized,
-//          tags: [string], photoHistory: [{ imageThumb?, analysis, date, kind }], createdAt }
+//          tags: [string], photoHistory: [{ imageThumb?, analysis, date, kind }], createdAt,
+//          coverThumb?: dataURL|null (cover picture — overrides latest gallery photo) }
 function addPlant(plant) {
   return addRecord(STORE_PLANTS, {
     name: plant.name || "",

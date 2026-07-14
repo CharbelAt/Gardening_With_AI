@@ -83,6 +83,7 @@ function AddRoutineModal({ onClose, onAdded }) {
 function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [lightbox, setLightbox] = useState(false);
   const [plants, setPlants] = useState([]);
   const [form, setForm] = useState({
     task: routine.task || "",
@@ -133,6 +134,11 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
       </div>
 
       <div className="item-detail">
+        {routine.photoThumb && (
+          <button className="detail-hero" onClick={() => setLightbox(true)}>
+            <img src={routine.photoThumb} alt={routine.task} />
+          </button>
+        )}
         <div className="fact-chips">
           <span className="chip"><i className="bi bi-arrow-repeat"></i> every {routine.intervalDays} day{routine.intervalDays === 1 ? "" : "s"}</span>
           <span className="chip"><i className="bi bi-check2-circle"></i> {routine.lastDone ? `done ${timeAgo(routine.lastDone)}` : "never done"}</span>
@@ -161,6 +167,10 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
           <button className="btn btn-danger small" onClick={() => setConfirmDelete(true)}>Delete</button>
         </div>
       </div>
+
+      {lightbox && routine.photoThumb && (
+        <ImageLightbox src={routine.photoThumb} caption={routine.task} onClose={() => setLightbox(false)} />
+      )}
 
       {confirmDelete && (
         <ConfirmModal
@@ -254,7 +264,11 @@ function RoutinesView({ initialId, onNavigate }) {
           const due = isRoutineDue(r);
           return (
             <button key={r.id} className={due ? "item-card due" : "item-card"} onClick={() => setSelectedId(r.id)}>
-              <div className="item-card-placeholder"><i className="bi bi-arrow-repeat"></i></div>
+              {r.photoThumb ? (
+                <img src={r.photoThumb} alt={r.task} />
+              ) : (
+                <div className="item-card-placeholder"><i className="bi bi-arrow-repeat"></i></div>
+              )}
               <span className="item-card-title">{r.task || "Untitled routine"}</span>
               <span className="item-card-sub">
                 every {r.intervalDays}d · {r.lastDone ? timeAgo(r.lastDone) : "never done"}

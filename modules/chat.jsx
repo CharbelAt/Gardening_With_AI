@@ -220,6 +220,8 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           messages={messages}
           setMessages={setMessages}
           onClose={() => setCallActive(false)}
+          pendingSetter={setPendingActions}
+          onApplied={flashApplied}
         />
       )}
       <div className="composer">
