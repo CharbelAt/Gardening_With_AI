@@ -142,13 +142,14 @@ function CallBar({ chatId, messages, setMessages, onClose }) {
       });
       const { cleanText, actions } = extractActions(data.reply || "");
       const reply = cleanText || "Sorry, I didn't catch that.";
+      // Act FIRST (IndexedDB writes are instant), then speak — so by the time
+      // Sprout says "done", it's actually done. Calls apply updates only in
+      // auto mode (handleAiActions skips writes in confirm mode when passed null).
+      await handleAiActions(actions, null);
       const aiMsg = { chatId, role: "assistant", kind: "text", text: reply, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
       speak(reply);
-      // Calls apply updates only in auto mode — no confirm UI mid-call
-      // (handleAiActions skips writes in confirm mode when passed null).
-      await handleAiActions(actions, null);
     } catch (e) {
       setError(e.message);
       if (activeRef.current) startListening();

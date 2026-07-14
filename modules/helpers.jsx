@@ -371,6 +371,10 @@ const ACTION_CONVENTIONS =
   'User says: "add a note to the basil: it looked droopy this morning" (basil is id:4 with notes "from a cutting") — your reply ends with:\n' +
   'UPDATE_PLANT: {"id": 4, "fields": {"notes": "from a cutting; looked droopy this morning"}}\n' +
   "RULES:\n" +
+  "- ACT IN THIS REPLY: when the user asks for a change, the action line(s) must be at the end " +
+  "of THIS message — act first, then your visible text simply confirms it. NEVER answer " +
+  '"I\'ll add it" or "Added!" without the line in the same reply, and never defer the action ' +
+  "to a later turn. A reply that claims a change but has no action line is a failure.\n" +
   "- ALWAYS act on explicit commands — add, remove, update, note, log, track, remember — with the matching action line(s).\n" +
   '- "notes" REPLACES the old notes: to add a note, repeat the existing notes and append the new one (see example).\n' +
   "- Use real ids from the garden data above. Only include fields that actually change. Never leave <placeholders> in the JSON.\n" +
@@ -385,6 +389,17 @@ const ACTION_CONVENTIONS =
   ". Invent a short lowercase tag only when none fit.\n" +
   "- If you are UNSURE which item the user means, or whether they really want a change: ask a short clarifying question in your visible reply and emit NO action line for that change.\n" +
   "- Never invent changes the user didn't state, and don't re-emit an action already applied earlier in the conversation.";
+
+// Short reminder appended AFTER the conversation history — models weight the
+// end of the context most, and this is what finally made "add X" reliably act
+// in the SAME reply instead of a later one.
+const ACTION_REMINDER =
+  "REMINDER — check before you answer: does the user's latest message ask to add, update, " +
+  "remove, log, note, or track anything (plant, tool, routine, watering, purchase)? " +
+  "If yes: end THIS reply with the matching action line(s), exactly per the formulas in your " +
+  "instructions — act now, in this reply, never later. If unsure which item they mean, ask " +
+  "instead and emit nothing. If a change was already applied earlier in the conversation, " +
+  "don't re-emit it. Never claim a change without its action line in this same reply.";
 
 // Builds the text-only context array the chat model sees, from stored history.
 // Calls send a shorter tail — every spoken turn is a fresh request, and the
@@ -414,6 +429,7 @@ async function buildContextMessages(history, mode) {
       msgs.push({ role: m.role, content: m.text || "" });
     }
   }
+  msgs.push({ role: "system", content: ACTION_REMINDER });
   return msgs;
 }
 

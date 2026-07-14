@@ -63,10 +63,12 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         messages: await buildContextMessages(nextHistory, "chat"),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
+      // Apply the AI's changes FIRST, then show its reply — by the time the
+      // user reads "added!", the item is already in the module.
+      await handleAiActions(actions, setPendingActions);
       const aiMsg = { chatId, role: "assistant", kind: "text", text: cleanText, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
-      await handleAiActions(actions, setPendingActions);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -83,10 +85,10 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     try {
       const data = await apiFetch("/api/chat", { mode: "chat", messages: await buildContextMessages(historyUpTo, "chat") });
       const { cleanText, actions } = extractActions(data.reply || "");
+      await handleAiActions(actions, setPendingActions); // act first
       const updated = { ...msg, text: cleanText };
       await updateMessage(updated);
       setMessages((prev) => prev.map((m) => (m.id === msg.id ? updated : m)));
-      await handleAiActions(actions, setPendingActions);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -135,10 +137,10 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         prompt: await buildChatVisionPrompt(text),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
+      await handleAiActions(actions, setPendingActions); // act first
       const aiMsg = { chatId, role: "assistant", kind: "text", text: cleanText, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
-      await handleAiActions(actions, setPendingActions);
     } catch (e) {
       setError(e.message);
     } finally {
