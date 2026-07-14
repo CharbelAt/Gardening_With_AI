@@ -10,6 +10,8 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
   const [pendingPhoto, setPendingPhoto] = useState(null); // { dataUrl, base64, caption }
   const [regeneratingId, setRegeneratingId] = useState(null);
   const [callActive, setCallActive] = useState(false);
+  const [appliedNote, setAppliedNote] = useState(""); // "✓ what actually got saved" toast
+  const appliedTimer = useRef(null);
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera (capture attr)
   const scrollRef = useRef(null);
@@ -37,6 +39,17 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     setCallActive(false);
   }, [chatId]);
 
+  useEffect(() => () => clearTimeout(appliedTimer.current), []);
+
+  // Visible proof of writes: shows exactly what was saved (from the app's own
+  // apply pipeline, not the AI's claims), then fades.
+  function flashApplied(res) {
+    if (!res || !res.applied || res.applied.length === 0) return;
+    setAppliedNote(res.applied.join(" · "));
+    clearTimeout(appliedTimer.current);
+    appliedTimer.current = setTimeout(() => setAppliedNote(""), 6000);
+  }
+
   function toggleCall() {
     if (!callSupported) {
       setError("Voice calls need browser speech recognition — try Chrome on Android.");
@@ -59,13 +72,15 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     setBusy(true);
     try {
       const data = await apiFetch("/api/chat", {
-        mode: "chat",
+        // Router: commands take the fast "act" chain, questions the smart one.
+        mode: detectChatMode(text),
         messages: await buildContextMessages(nextHistory, "chat"),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
       // Apply the AI's changes FIRST, then show its reply — by the time the
       // user reads "added!", the item is already in the module.
-      await handleAiActions(actions, setPendingActions);
+      const res = await handleAiActions(actions, setPendingActions, { chatId });
+      flashApplied(res);
       const aiMsg = { chatId, role: "assistant", kind: "text", text: cleanText, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
@@ -85,7 +100,8 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     try {
       const data = await apiFetch("/api/chat", { mode: "chat", messages: await buildContextMessages(historyUpTo, "chat") });
       const { cleanText, actions } = extractActions(data.reply || "");
-      await handleAiActions(actions, setPendingActions); // act first
+      const res = await handleAiActions(actions, setPendingActions, { chatId }); // act first
+      flashApplied(res);
       const updated = { ...msg, text: cleanText };
       await updateMessage(updated);
       setMessages((prev) => prev.map((m) => (m.id === msg.id ? updated : m)));
@@ -137,7 +153,8 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         prompt: await buildChatVisionPrompt(text),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
-      await handleAiActions(actions, setPendingActions); // act first
+      const res = await handleAiActions(actions, setPendingActions, { chatId }); // act first
+      flashApplied(res);
       const aiMsg = { chatId, role: "assistant", kind: "text", text: cleanText, createdAt: Date.now() };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
@@ -176,6 +193,11 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         <div ref={scrollRef} />
       </div>
       {error && <div className="error-banner">{error}</div>}
+      {appliedNote && (
+        <div className="applied-banner">
+          <i className="bi bi-check2-circle"></i> {appliedNote}
+        </div>
+      )}
       <PendingActionsBanner actions={pendingActions} onResolve={setPendingActions} />
       {pendingPhoto && (
         <div className="photo-preview">

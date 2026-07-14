@@ -991,6 +991,19 @@ button { font-family: inherit; }
   color: #fff;
 }
 
+/* "✓ Applied" toast — proof of what the AI's actions actually saved */
+.applied-banner {
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface));
+  border: 1px solid var(--primary);
+  color: var(--text);
+  border-radius: var(--r-md);
+  padding: 9px 12px;
+  margin: 0 12px 8px;
+  font-size: 0.85rem;
+}
+
+.applied-banner i { color: var(--primary-soft); margin-right: 4px; }
+
 /* Confirm banner (AI-proposed updates) */
 .confirm-banner {
   background: var(--warn-bg);

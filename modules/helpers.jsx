@@ -219,16 +219,45 @@ const CODEX_RESEARCH_SYSTEM =
 
 // Every new plant/tool automatically gets a researched codex entry (with
 // sources) so the codex accumulates real knowledge about what the user owns.
-// Fire-and-forget: never blocks or breaks the add itself; skips duplicates.
-// mode:"research" routes to the web-search-capable model chain server-side.
-const codexInFlight = new Set(); // names being researched right now (dedupe)
+//
+// THROTTLED QUEUE: research runs through Groq's compound-mini, which shares
+// gpt-oss-120b's 8K tokens/MINUTE bucket (seen live in the 429 logs) — the
+// same bucket chat falls back to. Bulk adds ("add demo data") used to fire N
+// research calls at once and starve the chat. Jobs now run one at a time with
+// a 20s gap, in the background; adds are never blocked.
+const codexInFlight = new Set(); // names queued/being researched (dedupe)
+const codexQueue = [];
+let codexQueueRunning = false;
+const CODEX_RESEARCH_GAP_MS = 20000;
 
-async function ensureCodexResearch(kind, name) {
+function ensureCodexResearch(kind, name) {
   const clean = (name || "").trim();
   if (!clean) return;
   const norm = clean.toLowerCase();
   if (codexInFlight.has(norm)) return;
   codexInFlight.add(norm);
+  codexQueue.push({ kind, name: clean });
+  processCodexQueue(); // fire-and-forget
+}
+
+async function processCodexQueue() {
+  if (codexQueueRunning) return;
+  codexQueueRunning = true;
+  try {
+    while (codexQueue.length > 0) {
+      const job = codexQueue.shift();
+      await researchCodexItem(job.kind, job.name);
+      if (codexQueue.length > 0) {
+        await new Promise((r) => setTimeout(r, CODEX_RESEARCH_GAP_MS));
+      }
+    }
+  } finally {
+    codexQueueRunning = false;
+  }
+}
+
+async function researchCodexItem(kind, clean) {
+  const norm = clean.toLowerCase();
   try {
     const existing = await getAllCodexEntries();
     if (existing.some((e) => (e.itemName || e.title || "").trim().toLowerCase() === norm)) return;
@@ -249,12 +278,16 @@ async function ensureCodexResearch(kind, name) {
   }
 }
 
-// Reconciliation sweep: research any plant/tool that somehow has no codex
-// entry yet (e.g. Groq was down at add time, or the item predates the codex
-// feature). Runs on app load and whenever the Codex opens; capped per sweep
-// so it can never burn through the free-tier quota in one go.
+// Reconciliation sweep: enqueue research for any plant/tool with no codex
+// entry yet (failed earlier / predates the feature). Runs on app load and
+// when the Codex opens — but at most once per 10 minutes, capped per sweep,
+// and everything goes through the throttled queue above.
+let lastCodexSweepAt = 0;
+
 async function syncCodexEntries(maxNew = 3) {
   try {
+    if (Date.now() - lastCodexSweepAt < 10 * 60 * 1000) return 0;
+    lastCodexSweepAt = Date.now();
     const [plants, tools, entries] = await Promise.all([
       getAllPlants(),
       getAllTools(),
@@ -266,7 +299,7 @@ async function syncCodexEntries(maxNew = 3) {
       ...tools.map((t) => ({ kind: "tool", name: t.name })),
     ].filter((x) => x.name && x.name.trim() && !have.has(x.name.trim().toLowerCase()));
     for (const item of missing.slice(0, maxNew)) {
-      await ensureCodexResearch(item.kind, item.name); // sequential — gentle on the quota
+      ensureCodexResearch(item.kind, item.name); // enqueued, spaced 20s apart
     }
     return missing.length;
   } catch (e) {
@@ -363,6 +396,7 @@ const ACTION_CONVENTIONS =
   'ADD_ROUTINE: {"fields": {"task": "...", "intervalDays": 3, "plantId": <plant id>, "careAction": "water", "tags": ["..."]}}\n' +
   'UPDATE_ROUTINE: {"id": <routine id>, "fields": {"task": "...", "intervalDays": 5, "tags": ["..."]}}\n' +
   'COMPLETE_ROUTINE: {"id": <routine id>}\n' +
+  'ATTACH_PHOTO: {"plantId": <plant id>, "photoId": <optional N from "[shared photo #N]" — omit for the newest photo in this chat>}\n' +
   "WORKED EXAMPLES:\n" +
   'User says: "I bought 2 bags of tomato fertilizer and planted mint in the balcony pot" — ' +
   "your reply chats normally, then ends with these two lines:\n" +
@@ -370,12 +404,17 @@ const ACTION_CONVENTIONS =
   'ADD_PLANT: {"fields": {"name": "Mint", "location": "balcony pot", "tags": ["herb", "outdoor"]}}\n' +
   'User says: "add a note to the basil: it looked droopy this morning" (basil is id:4 with notes "from a cutting") — your reply ends with:\n' +
   'UPDATE_PLANT: {"id": 4, "fields": {"notes": "from a cutting; looked droopy this morning"}}\n' +
+  'User sends a photo and says "add this picture to the basil" (basil is id:4) — your reply ends with:\n' +
+  'ATTACH_PHOTO: {"plantId": 4}\n' +
   "RULES:\n" +
   "- ACT IN THIS REPLY: when the user asks for a change, the action line(s) must be at the end " +
   "of THIS message — act first, then your visible text simply confirms it. NEVER answer " +
   '"I\'ll add it" or "Added!" without the line in the same reply, and never defer the action ' +
   "to a later turn. A reply that claims a change but has no action line is a failure.\n" +
   "- ALWAYS act on explicit commands — add, remove, update, note, log, track, remember — with the matching action line(s).\n" +
+  '- Photos the user sent in this chat appear as "[shared photo #N]". You CAN put them in a ' +
+  "plant's gallery with ATTACH_PHOTO — the app holds the image itself. NEVER say a photo " +
+  '"wasn\'t uploaded", that you "can\'t access it", or that you "need a URL".\n' +
   '- "notes" REPLACES the old notes: to add a note, repeat the existing notes and append the new one (see example).\n' +
   "- Use real ids from the garden data above. Only include fields that actually change. Never leave <placeholders> in the JSON.\n" +
   "- Dates: use the device date given above. When the user watered/fertilized a plant: UPDATE_PLANT with that date, plus COMPLETE_ROUTINE if a matching routine exists.\n" +
@@ -388,18 +427,35 @@ const ACTION_CONVENTIONS =
   PRESET_TAGS.routines.join("/") +
   ". Invent a short lowercase tag only when none fit.\n" +
   "- If you are UNSURE which item the user means, or whether they really want a change: ask a short clarifying question in your visible reply and emit NO action line for that change.\n" +
-  "- Never invent changes the user didn't state, and don't re-emit an action already applied earlier in the conversation.";
+  "- Never invent changes the user didn't ask for, and don't re-emit an action already applied " +
+  "earlier in the conversation. BUT when the user explicitly asks you to create demo/sample/" +
+  "example data, that IS a real request — emit one action line per item you create.";
 
 // Short reminder appended AFTER the conversation history — models weight the
 // end of the context most, and this is what finally made "add X" reliably act
 // in the SAME reply instead of a later one.
 const ACTION_REMINDER =
   "REMINDER — check before you answer: does the user's latest message ask to add, update, " +
-  "remove, log, note, or track anything (plant, tool, routine, watering, purchase)? " +
+  "remove, log, note, or track anything (plant, tool, routine, watering, purchase), to create " +
+  "demo/sample data (allowed — one action line per item), or to attach a photo they sent to a " +
+  "plant (use ATTACH_PHOTO — you CAN do this)? " +
   "If yes: end THIS reply with the matching action line(s), exactly per the formulas in your " +
   "instructions — act now, in this reply, never later. If unsure which item they mean, ask " +
   "instead and emit nothing. If a change was already applied earlier in the conversation, " +
   "don't re-emit it. Never claim a change without its action line in this same reply.";
+
+// Client-side intent router (user request: "thinking models for questions,
+// acting models for acting"). Command-looking messages take the FAST chain
+// server-side ("act" — small non-thinking models, near-instant); everything
+// else takes the SMART chain ("chat" — thinking models). A misroute only
+// affects speed/depth, never correctness: every chain gets the same prompt
+// and every model can emit actions.
+const ACT_INTENT_RE =
+  /\b(add|adds|added|remove|removed|delete|deleted|update|updated|log|logged|track|note|noted|mark|marked|rename|renamed|set|save|saved|attach|attached|complete|completed|done|water|watered|fertilize|fertilized|bought|purchased|used up|demo data|sample data)\b/i;
+
+function detectChatMode(text) {
+  return ACT_INTENT_RE.test(text || "") ? "act" : "chat";
+}
 
 // Builds the text-only context array the chat model sees, from stored history.
 // Calls send a shorter tail — every spoken turn is a fresh request, and the
@@ -418,11 +474,12 @@ async function buildContextMessages(history, mode) {
   const msgs = [{ role: "system", content: sys }];
   for (const m of recent) {
     if (m.kind === "image") {
+      // The #id lets the model reference a specific photo in ATTACH_PHOTO.
       msgs.push({
         role: m.role,
         content:
           m.role === "user"
-            ? `[shared a photo] ${m.text || ""}`
+            ? `[shared photo #${m.id}] ${m.text || ""}`
             : m.text || "",
       });
     } else {
@@ -449,11 +506,14 @@ async function buildChatVisionPrompt(caption) {
     plantList +
     "Identify the plant, assess its health from the photo, and give concrete care advice. " +
     `The user's question about this photo: "${caption}". ` +
-    "If the photo clearly shows one of the user's saved plants and its record should change, " +
-    'you may end your reply with ONE line, JSON on a single line, formatted exactly as ' +
-    'UPDATE_PLANT: {"id": <plant id>, "fields": {"notes": "..."}} — or ADD_PLANT: {"fields": {...}} ' +
-    "if they clearly want this new plant tracked. Never mention that line in your visible reply; " +
-    "skip it entirely when not genuinely warranted."
+    "You may end your reply with hidden action lines (JSON on a single line, never mentioned " +
+    "in your visible reply):\n" +
+    'UPDATE_PLANT: {"id": <plant id>, "fields": {"notes": "..."}} — if this photo warrants a record update.\n' +
+    'ADD_PLANT: {"fields": {...}} — if the user clearly wants this new plant tracked.\n' +
+    'ATTACH_PHOTO: {"plantId": <plant id>} — saves THIS photo into that plant\'s gallery; use it ' +
+    "whenever the user asks to add/attach/save this picture to a plant (you CAN do this — never " +
+    "say the photo wasn't uploaded or that you need a URL).\n" +
+    "Emit none of them when not genuinely warranted."
   );
 }
 
@@ -474,31 +534,70 @@ const ACTION_TYPE_MAP = {
   ADD_ROUTINE: "add_routine",
   UPDATE_ROUTINE: "update_routine",
   COMPLETE_ROUTINE: "complete_routine",
+  ATTACH_PHOTO: "attach_photo",
 };
-const ACTION_LINE_RE =
-  /^[\s>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE)\**\s*:\s*(\{.*\})[\s`*]*$/;
+const ACTION_START_RE =
+  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|ATTACH_PHOTO)\**[ \t]*:[ \t\n]*\{/g;
 
-function extractActions(text) {
-  const lines = (text || "").split("\n");
-  const actions = [];
-  const kept = [];
-  for (const line of lines) {
-    const match = line.match(ACTION_LINE_RE);
-    if (match && actions.length < 12) {
-      try {
-        const payload = JSON.parse(match[2]);
-        actions.push({ type: ACTION_TYPE_MAP[match[1]], ...payload });
-        continue; // consumed — never shown to the user
-      } catch (_) {
-        // malformed JSON — keep the line visible rather than losing content
+// Walks a balanced {...} starting at openIdx (string-aware, so braces inside
+// quoted values don't confuse it). Returns the index AFTER the closing brace,
+// or -1 if unbalanced.
+function scanJsonObject(text, openIdx) {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = openIdx; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+    } else {
+      if (c === '"') inStr = true;
+      else if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) return i + 1;
       }
     }
-    kept.push(line);
   }
-  // Remove code fences that only existed to wrap action lines (now empty).
-  const cleanText = kept
-    .join("\n")
-    .replace(/```[a-z]*\s*```/gi, "")
+  return -1;
+}
+
+function extractActions(text) {
+  let src = text || "";
+  const actions = [];
+  const spans = [];
+  ACTION_START_RE.lastIndex = 0;
+  let m;
+  // Brace-matching scan: catches actions ANYWHERE in the reply, whether the
+  // JSON is on one line or pretty-printed across many (Gemini/GLM do this),
+  // wrapped in code fences, bolded, or prefixed with list dashes.
+  while ((m = ACTION_START_RE.exec(src)) !== null && actions.length < 12) {
+    const verb = m[1];
+    const openIdx = m.index + m[0].length - 1; // position of '{'
+    const end = scanJsonObject(src, openIdx);
+    if (end === -1) continue; // unbalanced — leave visible
+    try {
+      const payload = JSON.parse(src.slice(openIdx, end));
+      actions.push({ type: ACTION_TYPE_MAP[verb], ...payload });
+      // Strip trailing decorations right after the JSON (backticks/asterisks).
+      let stripEnd = end;
+      const tail = src.slice(end).match(/^[ \t]*`{0,3}\**/);
+      if (tail) stripEnd += tail[0].length;
+      const start = m.index + (src[m.index] === "\n" ? 1 : 0); // keep the newline
+      spans.push([start, stripEnd]);
+      ACTION_START_RE.lastIndex = end;
+    } catch (_) {
+      // malformed JSON — keep it visible rather than silently losing content
+    }
+  }
+  for (let i = spans.length - 1; i >= 0; i--) {
+    src = src.slice(0, spans[i][0]) + src.slice(spans[i][1]);
+  }
+  const cleanText = src
+    .replace(/```[a-z]*\s*```/gi, "") // fences left empty after extraction
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
   return { cleanText, actions };
 }
@@ -537,6 +636,21 @@ async function resolveToolTarget(action) {
     if (byName) return byName;
   }
   return null;
+}
+
+// Finds the chat photo an ATTACH_PHOTO action points at: by explicit photoId,
+// else the newest photo in the current chat (ctx.chatId comes from the view
+// that received the AI reply).
+async function resolvePhotoTarget(action, ctx) {
+  const all =
+    ctx && ctx.chatId != null ? await getMessagesByChat(ctx.chatId) : await getAllMessages();
+  const photos = all.filter((m) => m.kind === "image" && m.imageThumb);
+  if (photos.length === 0) return null;
+  if (action.photoId != null) {
+    const byId = photos.find((p) => p.id === Number(action.photoId));
+    if (byId) return byId;
+  }
+  return photos[photos.length - 1]; // newest
 }
 
 async function resolveRoutineTarget(action) {
@@ -612,6 +726,22 @@ async function applyToolRemove(tool) {
   await deleteTool(tool.id);
 }
 
+// Copies a photo the user sent in chat into a plant's history/gallery.
+async function applyAttachPhoto(plant, photoMsg) {
+  await updatePlant({
+    ...plant,
+    photoHistory: [
+      ...(plant.photoHistory || []),
+      {
+        imageThumb: photoMsg.imageThumb,
+        analysis: photoMsg.text ? `Added from chat — ${photoMsg.text}` : "Added from chat",
+        date: Date.now(),
+        kind: "photo",
+      },
+    ],
+  });
+}
+
 async function applyRoutineAdd(fields) {
   await addRoutine({
     task: fields.task || "New routine",
@@ -647,8 +777,18 @@ async function completeRoutine(routine) {
 
 // Turns a raw extracted action into a resolved, describable, applicable one.
 // Returns null when the target no longer exists (stale id from the model).
-async function resolveAction(action) {
+// ctx: { chatId } — needed by attach_photo to find "the newest photo here".
+async function resolveAction(action, ctx) {
   switch (action.type) {
+    case "attach_photo": {
+      const plant = await resolvePlantTarget({
+        id: action.plantId != null ? Number(action.plantId) : action.id,
+        name: action.plantName || action.name,
+      });
+      if (!plant) return null;
+      const photoMsg = await resolvePhotoTarget(action, ctx);
+      return photoMsg ? { type: "attach_photo", plant, photoMsg } : null;
+    }
     case "add":
       return { type: "add_plant", fields: action.fields || {} };
     case "add_tool":
@@ -702,6 +842,8 @@ function describeAction(a) {
       return `Update routine "${a.routine.task}": ${fieldsText(a.fields)}`;
     case "complete_routine":
       return `Mark routine "${a.routine.task}" done`;
+    case "attach_photo":
+      return `Add the chat photo to "${a.plant.name}"'s gallery`;
     default:
       return "Unknown change";
   }
@@ -725,6 +867,8 @@ async function applyResolvedAction(a) {
       return applyRoutineUpdate(a.routine, a.fields);
     case "complete_routine":
       return completeRoutine(a.routine);
+    case "attach_photo":
+      return applyAttachPhoto(a.plant, a.photoMsg);
   }
 }
 
@@ -732,20 +876,29 @@ async function applyResolvedAction(a) {
 // then either applies them immediately (auto mode) or queues them for the
 // user to confirm. Pass setPendingActions=null where there's no confirm UI
 // (voice calls) — confirm mode then skips writes entirely, as before.
-async function handleAiActions(actions, setPendingActions) {
-  if (!actions || !actions.length) return;
+// ctx: { chatId } — lets attach_photo find photos in the current thread.
+// Returns { applied: [description…], queued: n } so the caller can show the
+// user visible proof of what was ACTUALLY saved (not just what the AI claims).
+async function handleAiActions(actions, setPendingActions, ctx = {}) {
+  const result = { applied: [], queued: 0 };
+  if (!actions || !actions.length) return result;
   const confirmMode = getAiWriteMode() === "confirm";
   const resolved = [];
   for (const action of actions) {
-    const r = await resolveAction(action);
+    const r = await resolveAction(action, ctx);
     if (r) resolved.push(r);
   }
-  if (!resolved.length) return;
+  if (!resolved.length) return result;
   if (confirmMode) {
-    if (setPendingActions) setPendingActions((prev) => [...(prev || []), ...resolved]);
-    return;
+    if (setPendingActions) {
+      setPendingActions((prev) => [...(prev || []), ...resolved]);
+      result.queued = resolved.length;
+    }
+    return result;
   }
   for (const r of resolved) {
     await applyResolvedAction(r);
+    result.applied.push(describeAction(r));
   }
+  return result;
 }
