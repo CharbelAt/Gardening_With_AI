@@ -80,18 +80,24 @@ function AddRoutineModal({ onClose, onAdded }) {
   );
 }
 
-function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
-  const [editing, setEditing] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [lightbox, setLightbox] = useState(false);
-  const [plants, setPlants] = useState([]);
-  const [form, setForm] = useState({
+// Edit-form seed. Re-run when the edit modal OPENS so AI updates made after
+// mount aren't shown stale in the form.
+function routineFormFrom(routine) {
+  return {
     task: routine.task || "",
     intervalDays: routine.intervalDays || 1,
     plantId: routine.plantId != null ? routine.plantId : null,
     careAction: routine.careAction || "",
     tags: routine.tags || [],
-  });
+  };
+}
+
+function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
+  const [editing, setEditing] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [lightbox, setLightbox] = useState(false);
+  const [plants, setPlants] = useState([]);
+  const [form, setForm] = useState(routineFormFrom(routine));
 
   useEffect(() => {
     getAllPlants().then(setPlants);
@@ -130,7 +136,16 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
       <div className="view-header">
         <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
         <h2>{routine.task || "Untitled routine"}</h2>
-        <button className="icon-btn" onClick={() => setEditing(true)} title="Edit"><i className="bi bi-pencil"></i></button>
+        <button
+          className="icon-btn"
+          onClick={() => {
+            setForm(routineFormFrom(routine)); // re-seed with any changes since mount
+            setEditing(true);
+          }}
+          title="Edit"
+        >
+          <i className="bi bi-pencil"></i>
+        </button>
       </div>
 
       <div className="item-detail">

@@ -4,9 +4,10 @@
 // editing files and committing to GitHub Pages (no build step).
 //
 // Navigation model: a persistent bottom bar switches the main view
-// (chat/garden/routines/inventory/codex). Voice calls live INSIDE the chat
-// view (CallBar in chat.jsx). Cross-module links (e.g. a plant's "Ask Sprout"
-// button, a routine's linked plant, an item's Codex button) go through
+// (chat/garden/routines/inventory/codex). Voice input is hold-to-talk
+// dictation in the chat composer (VoiceHoldButton in voice.jsx) — there is no
+// separate call view or call mode. Cross-module links (e.g. a plant's "Ask
+// Sprout" button, a routine's linked plant, an item's Codex button) go through
 // navigate(view, {itemId, draft, query}).
 
 function App() {

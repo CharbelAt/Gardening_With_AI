@@ -1,7 +1,23 @@
 // The Chat page: typed messages, photos (camera or gallery), AI action
 // confirmations (multi-action aware), per-message regenerate/copy/read-aloud,
-// and the embedded voice call (CallBar) — chat and call share one thread, so
-// the conversation doubles as the call's live transcript.
+// tap-to-ask follow-up chips under the newest reply, and hold-to-talk
+// dictation (VoiceHoldButton in voice.jsx — the mic only records while held,
+// and the transcript lands in the input instead of being sent).
+
+// The follow-up questions the model proposed on its last reply (FOLLOWUP line,
+// parsed by extractFollowups). Tapping one asks it immediately.
+function FollowupChips({ suggestions, onPick, disabled }) {
+  if (!suggestions || suggestions.length === 0) return null;
+  return (
+    <div className="followup-chips">
+      {suggestions.map((s, i) => (
+        <button key={i} className="followup-chip" onClick={() => onPick(s)} disabled={disabled}>
+          <i className="bi bi-arrow-return-right"></i> {s}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftConsumed, onFirstUserMessage }) {
   const [input, setInput] = useState("");
@@ -9,7 +25,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
   const [pendingActions, setPendingActions] = useState([]);
   const [pendingPhoto, setPendingPhoto] = useState(null); // { dataUrl, base64, caption }
   const [regeneratingId, setRegeneratingId] = useState(null);
-  const [callActive, setCallActive] = useState(false);
+  const [voice, setVoice] = useState({ state: "idle", seconds: 0, hint: "" });
   const [appliedNote, setAppliedNote] = useState(""); // "✓ what actually got saved" toast
   const appliedTimer = useRef(null);
   const fileInputRef = useRef(null); // gallery / files
@@ -17,8 +33,15 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
 
-  const callSupported =
-    !!(window.SpeechRecognition || window.webkitSpeechRecognition) && "speechSynthesis" in window;
+  // Chips hang off the NEWEST assistant reply only, so old suggestions can't
+  // pile up down the thread.
+  let lastAssistantId = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") {
+      lastAssistantId = messages[i].id;
+      break;
+    }
+  }
 
   // "Ask Sprout" buttons elsewhere in the app land here with a prefilled
   // question about a specific plant/tool/topic.
@@ -32,12 +55,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, busy, callActive]);
-
-  // End any running call when the chat switches to another thread.
-  useEffect(() => {
-    setCallActive(false);
-  }, [chatId]);
+  }, [messages, busy, voice.state]);
 
   useEffect(() => () => clearTimeout(appliedTimer.current), []);
 
@@ -50,19 +68,21 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     appliedTimer.current = setTimeout(() => setAppliedNote(""), 6000);
   }
 
-  function toggleCall() {
-    if (!callSupported) {
-      setError("Voice calls need browser speech recognition — try Chrome on Android.");
-      return;
-    }
-    setError("");
-    setCallActive((v) => !v);
+  // Dictation result: appended to whatever is already typed (never sent for
+  // the user), so a hold can extend a half-typed message.
+  function appendTranscript(text) {
+    const clean = (text || "").trim();
+    if (!clean) return;
+    setInput((prev) => (prev.trim() ? `${prev.trim()} ${clean}` : clean));
+    inputRef.current?.focus();
   }
 
-  async function sendText() {
-    const text = input.trim();
+  // Send path shared by the send button, the Enter key, and follow-up chips.
+  // fromComposer=true means the text came out of the input, so clear it.
+  async function sendMessage(rawText, fromComposer) {
+    const text = (rawText || "").trim();
     if (!text || busy) return;
-    setInput("");
+    if (fromComposer) setInput("");
     setError("");
     if (messages.length === 0) onFirstUserMessage(text);
     const userMsg = { chatId, role: "user", kind: "text", text, createdAt: Date.now() };
@@ -86,7 +106,10 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           messages: msgs,
         });
         const { cleanText, actions } = extractActions(data.reply || "");
-        const { cleanText: shownText, status } = extractStatus(cleanText);
+        const { cleanText: afterStatus, status } = extractStatus(cleanText);
+        // Follow-up questions are stripped here too, so they never reach the
+        // bubble text (and therefore never get read aloud).
+        const { cleanText: shownText, followups } = extractFollowups(afterStatus);
         // Apply the AI's changes FIRST, then show its reply — by the time the
         // user reads "added!", the item is already in the module.
         const res = await handleAiActions(actions, setPendingActions, { chatId });
@@ -97,6 +120,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           kind: "text",
           text: shownText || "Working on it…",
           createdAt: Date.now(),
+          ...(followups.length ? { suggestions: followups } : {}),
         };
         aiMsg.id = await addMessage(aiMsg);
         history = [...history, aiMsg];
@@ -110,6 +134,10 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     }
   }
 
+  function sendText() {
+    sendMessage(input, true);
+  }
+
   async function regenerateMessage(msg) {
     const idx = messages.findIndex((m) => m.id === msg.id);
     if (idx <= 0) return;
@@ -119,10 +147,17 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     try {
       const data = await apiFetch("/api/chat", { mode: "chat", messages: await buildContextMessages(historyUpTo, "chat") });
       const { cleanText, actions } = extractActions(data.reply || "");
-      const { cleanText: shownText } = extractStatus(cleanText);
+      const { cleanText: afterStatus } = extractStatus(cleanText);
+      const { cleanText: shownText, followups } = extractFollowups(afterStatus);
       const res = await handleAiActions(actions, setPendingActions, { chatId }); // act first
       flashApplied(res);
-      const updated = { ...msg, text: shownText };
+      // A reply that was ONLY action lines leaves nothing to show — keep the
+      // previous text rather than blanking the bubble.
+      const updated = {
+        ...msg,
+        text: shownText || msg.text || "(no visible reply — try regenerating again)",
+        suggestions: followups.length ? followups : undefined,
+      };
       await updateMessage(updated);
       setMessages((prev) => prev.map((m) => (m.id === msg.id ? updated : m)));
     } catch (e) {
@@ -173,10 +208,18 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         prompt: await buildChatVisionPrompt(text),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
-      const { cleanText: shownText } = extractStatus(cleanText);
+      const { cleanText: afterStatus } = extractStatus(cleanText);
+      const { cleanText: shownText, followups } = extractFollowups(afterStatus);
       const res = await handleAiActions(actions, setPendingActions, { chatId }); // act first
       flashApplied(res);
-      const aiMsg = { chatId, role: "assistant", kind: "text", text: shownText, createdAt: Date.now() };
+      const aiMsg = {
+        chatId,
+        role: "assistant",
+        kind: "text",
+        text: shownText,
+        createdAt: Date.now(),
+        ...(followups.length ? { suggestions: followups } : {}),
+      };
       aiMsg.id = await addMessage(aiMsg);
       setMessages((prev) => [...prev, aiMsg]);
     } catch (e) {
@@ -197,12 +240,20 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           </div>
         )}
         {messages.map((m) => (
-          <MessageBubble
-            key={m.id}
-            msg={m}
-            onRegenerate={m.role === "assistant" ? () => regenerateMessage(m) : undefined}
-            regenerating={regeneratingId === m.id}
-          />
+          <React.Fragment key={m.id}>
+            <MessageBubble
+              msg={m}
+              onRegenerate={m.role === "assistant" ? () => regenerateMessage(m) : undefined}
+              regenerating={regeneratingId === m.id}
+            />
+            {m.id === lastAssistantId && !busy && (
+              <FollowupChips
+                suggestions={m.suggestions}
+                onPick={(q) => sendMessage(q)}
+                disabled={busy}
+              />
+            )}
+          </React.Fragment>
         ))}
         {busy && (
           <div className="bubble assistant typing">
@@ -235,16 +286,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           </div>
         </div>
       )}
-      {callActive && (
-        <CallBar
-          chatId={chatId}
-          messages={messages}
-          setMessages={setMessages}
-          onClose={() => setCallActive(false)}
-          pendingSetter={setPendingActions}
-          onApplied={flashApplied}
-        />
-      )}
+      <VoiceListeningBar state={voice.state} seconds={voice.seconds} hint={voice.hint} />
       <div className="composer">
         <button
           className="icon-btn"
@@ -287,13 +329,12 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           onKeyDown={(e) => e.key === "Enter" && sendText()}
           disabled={busy}
         />
-        <button
-          className={callActive ? "icon-btn call-toggle active" : "icon-btn call-toggle"}
-          title={callActive ? "End voice call" : "Start voice call"}
-          onClick={toggleCall}
-        >
-          <i className={callActive ? "bi bi-telephone-x-fill" : "bi bi-telephone"}></i>
-        </button>
+        <VoiceHoldButton
+          onTranscript={appendTranscript}
+          onError={setError}
+          onStateChange={setVoice}
+          disabled={busy}
+        />
         <button className="btn btn-send" onClick={sendText} disabled={busy || !input.trim()} title="Send">
           <i className="bi bi-send-fill"></i>
         </button>

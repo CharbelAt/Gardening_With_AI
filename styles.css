@@ -413,7 +413,7 @@ button { font-family: inherit; }
   flex-shrink: 0;
 }
 
-/* Five controls share the row (camera, gallery, input, call, send) — slim
+/* Five controls share the row (camera, gallery, input, mic, send) — slim
    the icon buttons so the text input keeps usable width on small phones. */
 .composer .icon-btn {
   min-width: 38px;
@@ -518,89 +518,105 @@ button { font-family: inherit; }
   margin-top: 8px;
 }
 
-/* ---------- Call view ---------- */
+/* ---------- Hold-to-talk dictation (voice.jsx) ---------- */
 
-.call-tab {
-  align-items: center;
-  justify-content: center;
-  gap: 22px;
-  padding: 20px;
+/* The mic button lives in the composer. touch-action/user-select keep a long
+   press from scrolling the page or popping the text-selection menu. */
+.mic-btn {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  transition: color 0.15s ease, transform 0.1s ease;
 }
 
-.call-orb {
-  width: 150px;
-  height: 150px;
+.mic-btn.listening {
+  color: var(--danger);
+  transform: scale(1.08);
+  animation: mic-pulse 1.2s infinite;
   border-radius: 50%;
-  background: radial-gradient(circle at 30% 30%, var(--primary-soft), var(--primary-strong) 75%);
-  box-shadow: 0 0 0 0 rgba(76, 148, 85, 0.5), var(--shadow-2);
-  transition: box-shadow 0.3s ease, opacity 0.3s ease;
 }
 
-.call-orb.listening { animation: pulse 1.4s infinite; }
-.call-orb.thinking { opacity: 0.55; animation: breathe 1.6s infinite ease-in-out; }
-.call-orb.speaking { animation: pulse 0.6s infinite; }
+.mic-btn.transcribing { color: var(--primary-soft); opacity: 0.8; }
 
-@keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(76, 148, 85, 0.5); }
-  70% { box-shadow: 0 0 0 26px rgba(76, 148, 85, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(76, 148, 85, 0); }
+@keyframes mic-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 45%, transparent); }
+  70% { box-shadow: 0 0 0 14px color-mix(in srgb, var(--danger) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 0%, transparent); }
 }
 
-@keyframes breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(0.96); }
-}
-
-.call-status { font-size: 1.05rem; color: var(--text-dim); margin: 0; }
-.live-transcript { color: var(--text-faint); font-style: italic; text-align: center; margin: 0; }
-
-.btn-call, .btn-end-call {
-  padding: 14px 32px;
-  border-radius: 30px;
-  font-size: 1rem;
-}
-
-.btn-end-call { background: var(--danger); color: #fff; }
-.btn-end-call.small { padding: 8px 14px; font-size: 0.85rem; width: auto; margin: 0; flex-shrink: 0; }
-
-/* Voice call embedded in the chat page (CallBar) */
-.call-bar {
+/* Status strip above the composer while holding / transcribing. */
+.listening-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
+  gap: 10px;
+  padding: 8px 14px;
   background: var(--surface);
   border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--text-dim);
   flex-shrink: 0;
 }
 
-.call-orb.mini {
-  width: 42px;
-  height: 42px;
+.listening-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-faint);
   flex-shrink: 0;
-  box-shadow: 0 0 0 0 rgba(76, 148, 85, 0.5), var(--shadow-1);
 }
 
-.call-bar-text {
+.listening-bar.listening .listening-dot { background: var(--danger); animation: mic-pulse 1.2s infinite; }
+.listening-bar.transcribing .listening-dot { background: var(--primary-soft); animation: listening-breathe 1.4s infinite ease-in-out; }
+
+.listening-text {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.call-bar-status { font-size: 0.85rem; font-weight: 600; color: var(--text-dim); }
-.call-bar-transcript {
-  font-size: 0.8rem;
-  font-style: italic;
-  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.call-bar-error { font-size: 0.78rem; color: var(--danger); }
 
-.call-toggle.active { color: var(--danger); }
+.listening-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+@keyframes listening-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ---------- follow-up suggestion chips (newest reply only) ---------- */
+
+.followup-chips {
+  align-self: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 90%;
+  margin: -2px 0 2px;
+}
+
+.followup-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, var(--border));
+  color: var(--text);
+  border-radius: 16px;
+  padding: 7px 12px;
+  font-size: 0.82rem;
+  text-align: left;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.followup-chip i { color: var(--primary-soft); font-size: 0.75rem; }
+.followup-chip:hover { border-color: var(--primary); }
+.followup-chip:disabled { opacity: 0.5; cursor: default; }
 
 /* ============================================================
    Modals
@@ -896,6 +912,29 @@ button { font-family: inherit; }
 .item-quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 
 .item-detail h3 { margin: 18px 0 8px; font-size: 0.95rem; }
+
+/* AI label reading of an inventory item's photo (tool.productInfo) */
+.product-info {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  margin-top: 12px;
+}
+
+.product-info h3 { margin: 0 0 6px; font-size: 0.95rem; color: var(--primary-soft); }
+.product-info h3 i { margin-right: 6px; }
+
+.product-info-body {
+  font-size: 0.88rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.product-info-body p:first-child { margin-top: 0; }
+.product-info-body p:last-child { margin-bottom: 0; }
+.product-info-body ul, .product-info-body ol { margin: 6px 0; padding-left: 20px; }
+.product-info-body a { color: var(--primary-soft); }
 
 /* Cross-module linked rows (plant ↔ routine) */
 .linked-section { margin-top: 6px; }

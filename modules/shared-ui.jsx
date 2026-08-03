@@ -411,9 +411,9 @@ function HelpModal({ onClose }) {
           <h3>Getting around</h3>
           <p>The bar at the bottom switches between Chat, Garden, Routines, Inventory, and Codex. The gear in the header opens Settings.</p>
           <h3>Chat</h3>
-          <p>Type gardening questions to Sprout. The camera button takes a new photo; the pictures button picks one from your gallery — either way it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil".</p>
-          <h3>Voice calls</h3>
-          <p>Tap the phone icon in the chat composer for a hands-free voice conversation right inside the chat — you'll see a live transcript as you speak, and everything lands in the same thread. You can interrupt Sprout any time just by talking: it stops speaking and listens. Tap the red button to hang up. Works best in Chrome on Android.</p>
+          <p>Type gardening questions to Sprout. The camera button takes a new photo; the pictures button picks one from your gallery — either way it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil". After a reply you'll often see a row of suggested follow-up questions — tap one to ask it straight away.</p>
+          <h3>Talking instead of typing</h3>
+          <p>Press and HOLD the microphone button in the composer and speak — it listens for as long as you hold it, however long that is, and stops the moment you let go (so it can never hear itself). Release and your words appear in the text box, added to anything already typed. Nothing is sent until you press Send, so you can fix a word first. If Sprout is reading a reply aloud, holding the mic stops it.</p>
           <h3>Chats</h3>
           <p>The chat-bubbles icon in the header lets you keep separate conversation threads, rename them, or start a new one. New chats name themselves after your first message.</p>
           <h3>Garden</h3>
@@ -421,7 +421,7 @@ function HelpModal({ onClose }) {
           <h3>Routines</h3>
           <p>Recurring care tasks with a "Due" badge when overdue (also shown on the bottom bar). Link a routine to a plant with a care action — marking "Water the ficus" done then updates the ficus's watering record automatically.</p>
           <h3>Inventory</h3>
-          <p>Your tools and supplies as cards — tap one for details or to edit it. Telling Sprout what you bought or used up keeps this in sync too. The "To get" tab is your shopping checklist: add items there (or say "I need to buy…"), check them off when bought, and move them straight into your inventory. Open items show as a badge on the Inventory tab.</p>
+          <p>Your tools and supplies as cards — tap one for details or to edit it. Photograph an item from its page and Sprout reads the label for you: product type, active ingredients, dosage and safety notes land in a "Product info" section (and the picture becomes the item's photo). Telling Sprout what you bought or used up keeps this in sync too. The "To get" tab is your shopping checklist: add items there (or say "I need to buy…"), check them off when bought, and move them straight into your inventory. Open items show as a badge on the Inventory tab.</p>
           <h3>Tags</h3>
           <p>Plants, tools, and routines can all be tagged (e.g. "herb", "pesticide", "watering") — pick preset tags or type your own when adding/editing, and Sprout tags things it adds for you. Tap a tag in the bar above any grid to filter by it.</p>
           <h3>Codex</h3>

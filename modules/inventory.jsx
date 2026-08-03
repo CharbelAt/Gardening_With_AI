@@ -2,6 +2,14 @@
 // info-rich detail page (brand, condition, storage location, purchase date,
 // price, last used). Editable via chat too (ADD_TOOL/UPDATE_TOOL/REMOVE_TOOL
 // in helpers.jsx).
+//
+// Item photos double as PRODUCT-LABEL SCANS: taking/choosing a picture on an
+// item's page saves it as the item's cover first (it must survive an AI
+// outage), then asks the vision model to read the label — product name, type,
+// active ingredients, dosage, safety — and stores that as `productInfo`,
+// rendered in a "Product info" section. The model may also propose an
+// UPDATE_TOOL for fields it's confident about, which goes through the normal
+// auto/confirm pipeline.
 
 const TOOL_CONDITIONS = ["", "new", "good", "worn", "needs repair", "broken"];
 
@@ -54,6 +62,22 @@ function emptyToolForm() {
   return { name: "", quantity: 1, brand: "", condition: "", location: "", purchaseDate: "", price: "", notes: "", tags: [] };
 }
 
+// Edit-form seed. Re-run every time the edit modal OPENS (not just at mount),
+// so quantity bumps and AI updates made in between aren't shown stale.
+function toolFormFrom(tool) {
+  return {
+    name: tool.name || "",
+    quantity: tool.quantity != null ? tool.quantity : 1,
+    brand: tool.brand || "",
+    condition: tool.condition || "",
+    location: tool.location || "",
+    purchaseDate: tool.purchaseDate || "",
+    price: tool.price != null ? tool.price : "",
+    notes: tool.notes || "",
+    tags: tool.tags || [],
+  };
+}
+
 function toolFromForm(form) {
   return {
     name: form.name.trim(),
@@ -97,17 +121,10 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmPhotoRemove, setConfirmPhotoRemove] = useState(false);
   const [lightbox, setLightbox] = useState(false);
-  const [form, setForm] = useState({
-    name: tool.name || "",
-    quantity: tool.quantity != null ? tool.quantity : 1,
-    brand: tool.brand || "",
-    condition: tool.condition || "",
-    location: tool.location || "",
-    purchaseDate: tool.purchaseDate || "",
-    price: tool.price != null ? tool.price : "",
-    notes: tool.notes || "",
-    tags: tool.tags || [],
-  });
+  const [busy, setBusy] = useState(false); // label analysis in flight
+  const [error, setError] = useState("");
+  const [pendingActions, setPendingActions] = useState([]);
+  const [form, setForm] = useState(toolFormFrom(tool));
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera
 
@@ -129,14 +146,68 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
     onChanged();
   }
 
-  // Photo: camera or gallery (no capture attribute → the OS shows a chooser).
+  // Photo: camera or gallery. The picture is the item's cover AND a product-
+  // label scan. Same rule as plant photos: SAVE THE PHOTO FIRST, analyze
+  // after — a picture must never be lost because the AI was down.
   async function onPhotoChosen(e) {
     const file = e.target.files[0];
     e.target.value = "";
-    if (!file) return;
-    const dataUrl = await resizeImageToDataUrl(file, 800, 0.75);
-    await updateTool({ ...tool, photoThumb: dataUrl });
-    onChanged();
+    if (!file || busy) return;
+    setError("");
+    setBusy(true);
+    let withPhoto = null;
+    try {
+      const dataUrl = await resizeImageToDataUrl(file, 800, 0.75);
+      const [, base64] = dataUrl.split(",");
+      withPhoto = { ...tool, photoThumb: dataUrl };
+      await updateTool(withPhoto);
+      onChanged();
+
+      const prompt =
+        `You are Sprout, looking at a photo of one item in the user's garden inventory: ` +
+        `"${tool.name}" (id: ${tool.id}, quantity: ${tool.quantity}, brand: ${tool.brand || "unknown"}, ` +
+        `current notes: ${tool.notes || "none"}). The user's device says it is now: ${deviceNow()}. ` +
+        `IF THE PHOTO SHOWS A PRODUCT LABEL (fungicide, fertilizer, pesticide, soil, seeds, or any ` +
+        `packaged garden product), READ THE LABEL and report: product name, brand, what type of ` +
+        `product it is, active ingredients, the dosage/mixing rate and how to apply it, and the key ` +
+        `safety warnings. If it is a plain tool with no label, explain what the tool is and how and ` +
+        `when to use it instead. Answer in 4-8 concise sentences (markdown allowed, no headings). ` +
+        `If the label is unreadable in this photo, say so plainly instead of guessing.\n` +
+        `You may end your reply with hidden lines — never mention them in your visible text:\n` +
+        `UPDATE_TOOL: {"id": ${tool.id}, "fields": {"brand": "...", "tags": ["..."], "condition": "new|good|worn|needs repair", "notes": "..."}} ` +
+        `— ONLY fields you are CONFIDENT about from the photo. "notes" REPLACES the old notes, so ` +
+        `repeat the existing notes and append the new detail.\n` +
+        `FOLLOWUP: ["short question 1", "short question 2"] — optional, 2-3 short questions the user ` +
+        `might ask next, in the user's voice.`;
+
+      const data = await apiFetch("/api/vision", { imageBase64: base64, mimeType: "image/jpeg", prompt });
+      const { cleanText, actions } = extractActions(data.reply || "");
+      const { cleanText: afterStatus } = extractStatus(cleanText);
+      const { cleanText: info } = extractFollowups(afterStatus);
+
+      await updateTool({
+        ...withPhoto,
+        productInfo: info || "No product details could be read from this photo.",
+      });
+      onChanged();
+
+      // Photo analysis for THIS item may only ever update THIS item — force
+      // id-based targeting so a confused model can't edit something else.
+      const updates = actions
+        .filter((a) => a.type === "update_tool")
+        .map((a) => ({ ...a, id: tool.id }));
+      await handleAiActions(updates, setPendingActions, {});
+      onChanged();
+    } catch (err) {
+      // Keep the photo; just record that the analysis didn't happen.
+      if (withPhoto) {
+        await updateTool({ ...withPhoto, productInfo: "Photo saved (AI analysis unavailable)." }).catch(() => {});
+        onChanged();
+      }
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function removePhoto() {
@@ -161,7 +232,16 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
       <div className="view-header">
         <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
         <h2>{tool.name || "Unnamed item"}</h2>
-        <button className="icon-btn" onClick={() => setEditing(true)} title="Edit"><i className="bi bi-pencil"></i></button>
+        <button
+          className="icon-btn"
+          onClick={() => {
+            setForm(toolFormFrom(tool)); // re-seed: quantity/AI changes since mount
+            setEditing(true);
+          }}
+          title="Edit"
+        >
+          <i className="bi bi-pencil"></i>
+        </button>
       </div>
 
       <div className="item-detail">
@@ -192,10 +272,10 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
 
         <div className="item-quick-actions">
           <button className="btn small" onClick={markUsed}><i className="bi bi-hand-index"></i> Mark used</button>
-          <button className="btn small" onClick={() => cameraInputRef.current.click()}>
-            <i className="bi bi-camera"></i> Camera
+          <button className="btn small" onClick={() => cameraInputRef.current.click()} disabled={busy}>
+            <i className="bi bi-camera"></i> {busy ? "Analyzing…" : "Camera"}
           </button>
-          <button className="btn small" onClick={() => fileInputRef.current.click()}>
+          <button className="btn small" onClick={() => fileInputRef.current.click()} disabled={busy}>
             <i className="bi bi-images"></i> Gallery
           </button>
           {tool.photoThumb && (
@@ -223,6 +303,26 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
           style={{ display: "none" }}
           onChange={onPhotoChosen}
         />
+
+        {error && <div className="error-banner">{error}</div>}
+        <PendingActionsBanner
+          actions={pendingActions}
+          onResolve={(next) => {
+            setPendingActions(next);
+            onChanged();
+          }}
+        />
+
+        {busy && <p className="empty-hint">Reading the label…</p>}
+        {tool.productInfo && (
+          <div className="product-info">
+            <h3><i className="bi bi-upc-scan"></i> Product info</h3>
+            <div
+              className="product-info-body"
+              dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(tool.productInfo) }}
+            />
+          </div>
+        )}
       </div>
 
       {lightbox && tool.photoThumb && (

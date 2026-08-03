@@ -48,6 +48,18 @@ function AddPlantModal({ onClose, onAdded }) {
   );
 }
 
+// Edit-form seed. Re-run when the edit modal OPENS so AI updates / care marks
+// made after mount don't show up stale in the form.
+function plantFormFrom(plant) {
+  return {
+    name: plant.name || "",
+    location: plant.location || "",
+    plantingDate: plant.plantingDate || "",
+    notes: plant.notes || "",
+    tags: plant.tags || [],
+  };
+}
+
 function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -56,13 +68,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [linkedRoutines, setLinkedRoutines] = useState([]);
   const [lightbox, setLightbox] = useState(null); // { src, caption }
-  const [form, setForm] = useState({
-    name: plant.name || "",
-    location: plant.location || "",
-    plantingDate: plant.plantingDate || "",
-    notes: plant.notes || "",
-    tags: plant.tags || [],
-  });
+  const [form, setForm] = useState(plantFormFrom(plant));
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera
 
@@ -140,15 +146,19 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
         `Identify visible health issues and give care advice. ` +
         `If this photo suggests an update to this plant's record, end your reply with a new line formatted ` +
         `EXACTLY as (JSON on a single line): UPDATE_PLANT: {"id": ${plant.id}, "fields": {"notes": "..."}} — only include fields that ` +
-        `should change, and only add this line if genuinely warranted. Never mention this line in your visible reply.`;
+        `should change, and only add this line if genuinely warranted. Never mention this line in your visible reply. ` +
+        `You may also add one line FOLLOWUP: ["short question 1", "short question 2"] — 2-3 short questions the user ` +
+        `might want to ask next, in the user's voice.`;
 
       const data = await apiFetch("/api/vision", { imageBase64: base64, mimeType: "image/jpeg", prompt });
       const { cleanText, actions } = extractActions(data.reply || "");
+      // The log entry shows plain analysis text — strip the hidden lines.
+      const { cleanText: analysisText } = extractFollowups(extractStatus(cleanText).cleanText);
 
       const analyzed = {
         ...withPhoto,
         photoHistory: withPhoto.photoHistory.map((h) =>
-          h.date === entryDate ? { ...h, analysis: cleanText || "Photo added" } : h
+          h.date === entryDate ? { ...h, analysis: analysisText || "Photo added" } : h
         ),
       };
       await updatePlant(analyzed);
@@ -196,7 +206,16 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
       <div className="view-header">
         <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
         <h2>{plant.name || "Unnamed plant"}</h2>
-        <button className="icon-btn" onClick={() => setEditing(true)} title="Edit"><i className="bi bi-pencil"></i></button>
+        <button
+          className="icon-btn"
+          onClick={() => {
+            setForm(plantFormFrom(plant)); // re-seed with any changes since mount
+            setEditing(true);
+          }}
+          title="Edit"
+        >
+          <i className="bi bi-pencil"></i>
+        </button>
       </div>
 
       <div className="item-detail">

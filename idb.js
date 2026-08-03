@@ -158,7 +158,9 @@ async function ensureDefaultChat() {
 
 // ---------- messages (chat/call memory) ----------
 
-// msg: { chatId, role: 'user'|'assistant', kind: 'text'|'image', text, imageThumb?, createdAt }
+// msg: { chatId, role: 'user'|'assistant', kind: 'text'|'image', text, imageThumb?, createdAt,
+//        suggestions?: [string] } — suggestions are the follow-up questions from the
+// reply's FOLLOWUP line (chat renders them as chips under the newest reply).
 function addMessage(msg) {
   return addRecord(STORE_MESSAGES, { ...msg, createdAt: msg.createdAt || Date.now() });
 }
@@ -180,7 +182,10 @@ function clearAllMessages() {
 
 // tool: { name, quantity, notes, tags: [string], createdAt,
 //         photoThumb?: dataURL|null, brand?, condition?, location?,
-//         purchaseDate?: "YYYY-MM-DD", price?: number|null, lastUsed?: timestamp|null }
+//         purchaseDate?: "YYYY-MM-DD", price?: number|null, lastUsed?: timestamp|null,
+//         productInfo?: string } — productInfo is the AI's label reading of the
+// item's photo (product type, active ingredients, dosage, safety), rendered as
+// the "Product info" section on the detail page. Schemaless field, no DB bump.
 function addTool(tool) {
   return addRecord(STORE_TOOLS, { ...tool, createdAt: Date.now() });
 }

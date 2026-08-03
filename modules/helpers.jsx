@@ -1,6 +1,6 @@
 // Shared constants, settings, and the AI/data helper functions used across
 // every module. Loaded first (after idb.js) so everything below is a plain
-// global by the time chat.jsx/call.jsx/garden.jsx/etc. run — see the note at
+// global by the time chat.jsx/voice.jsx/garden.jsx/etc. run — see the note at
 // the top of idb.js for why this app uses globals instead of import/export.
 
 const { useState, useEffect, useRef, useCallback } = React;
@@ -51,7 +51,12 @@ const SYSTEM_PROMPT_BASE =
   "If you're not fully confident about a specific fact — exact species identification, " +
   "disease diagnosis, or precise care details — say so plainly rather than guessing " +
   "confidently, and search for or reference a trusted source (university extension " +
-  "services, RHS, Missouri Botanical Garden, etc.) when you can.";
+  "services, RHS, Missouri Botanical Garden, etc.) when you can. " +
+  "ASK WHEN UNSURE: if the question is ambiguous, or a missing detail would materially " +
+  "change your answer (which plant or variety, indoor vs outdoor, their climate/location, " +
+  "what the symptoms actually look like and when they started), ask ONE short clarifying " +
+  "question first instead of guessing — and in that reply emit no action lines. " +
+  "When the detail doesn't change the answer, just answer.";
 
 // ---------- small formatting helpers ----------
 
@@ -180,23 +185,37 @@ async function apiFetch(path, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(
-      (data && data.error && (data.error.error?.message || data.error)) ||
-        `Request failed (${res.status})`
-    );
+    // Providers return errors as strings OR nested objects; without the
+    // stringify fallback an object error surfaced as "[object Object]".
+    const raw = data && data.error;
+    let msg = "";
+    if (typeof raw === "string") msg = raw;
+    else if (raw && typeof raw === "object") {
+      msg = raw.error?.message || raw.message || JSON.stringify(raw);
+    }
+    throw new Error(msg || `Request failed (${res.status})`);
   }
   return data;
 }
 
 // ---------- codex research (auto-logging of new items) ----------
 
-// Pulls a trailing "SOURCES: url1, url2" line off an AI reference reply.
-// (Lives here, not codex.jsx, because auto-research below needs it too.)
+// Pulls the "SOURCES: url1, url2" line off an AI reference reply. Matches the
+// LAST such line ANYWHERE in the text (models sometimes add a sign-off after
+// it, and the old end-of-string-anchored regex then silently lost every
+// source), tolerating the same markdown decorations as the STATUS line.
+const SOURCES_LINE_RE = /(?:^|\n)[ \t>*`-]*SOURCES\**[ \t]*:[ \t]*([^\n]*)/gi;
+
 function extractSources(text) {
-  const match = text.match(/SOURCES:\s*(.+)\s*$/i);
-  if (!match) return { body: text.trim(), sources: [] };
-  const body = text.slice(0, match.index).trim();
-  const raw = match[1].trim();
+  const src = text || "";
+  SOURCES_LINE_RE.lastIndex = 0;
+  let last = null;
+  let m;
+  while ((m = SOURCES_LINE_RE.exec(src)) !== null) last = m;
+  if (!last) return { body: src.trim(), sources: [] };
+  const start = last.index + (src[last.index] === "\n" ? 1 : 0); // keep the newline
+  const body = (src.slice(0, start) + src.slice(last.index + last[0].length)).trim();
+  const raw = (last[1] || "").replace(/[`*]+$/, "").trim();
   if (!raw || /^none$/i.test(raw)) return { body, sources: [] };
   const sources = raw
     .split(/[,|]/)
@@ -450,6 +469,11 @@ const ACTION_CONVENTIONS =
   "- Never invent changes the user didn't ask for, and don't re-emit an action already applied " +
   "earlier in the conversation. BUT when the user explicitly asks you to create demo/sample/" +
   "example data, that IS a real request — emit one action line per item you create.\n" +
+  "- FOLLOW-UP SUGGESTIONS (optional): after any action lines and BEFORE the STATUS line, you " +
+  'may emit exactly ONE line: FOLLOWUP: ["short question 1", "short question 2", "short ' +
+  'question 3"] — 2-3 SHORT questions the USER might want to ask you next, written in the ' +
+  'user\'s voice ("How often should I water it?"), never in yours. The app turns them into ' +
+  "tap-to-ask chips and never shows the line itself. Skip it for trivial confirmations.\n" +
   "- COMPLETION FLAG (mandatory): the VERY LAST line of EVERY reply must be exactly " +
   "STATUS: done — or STATUS: continue if you could not finish everything in this reply " +
   "(too many items, ran out of space). On STATUS: continue the app immediately asks you to " +
@@ -468,6 +492,8 @@ const ACTION_REMINDER =
   "instructions — act now, in this reply, never later. If unsure which item they mean, ask " +
   "instead and emit nothing. If a change was already applied earlier in the conversation, " +
   "don't re-emit it. Never claim a change without its action line in this same reply. " +
+  'Optionally, one line before the end: FOLLOWUP: ["…", "…"] with 2-3 short questions the ' +
+  "USER might ask next, in their voice. " +
   "Finally: your very last line must be STATUS: done, or STATUS: continue if work remains.";
 
 // Injected on automatic continuation rounds (previous reply flagged
@@ -487,22 +513,24 @@ const CONTINUE_NUDGE =
 const ACT_INTENT_RE =
   /\b(add|adds|added|remove|removed|delete|deleted|update|updated|log|logged|track|note|noted|mark|marked|rename|renamed|set|save|saved|attach|attached|complete|completed|done|water|watered|fertilize|fertilized|bought|purchased|used up|demo data|sample data)\b/i;
 
+// A message only takes the fast "act" chain when it looks like a command AND
+// isn't a question — "did you add the basil?" is a question about a command,
+// and deserves the smart chain (this was too trigger-happy before).
 function detectChatMode(text) {
-  return ACT_INTENT_RE.test(text || "") ? "act" : "chat";
+  const t = text || "";
+  return ACT_INTENT_RE.test(t) && !t.includes("?") ? "act" : "chat";
 }
 
 // Builds the text-only context array the chat model sees, from stored history.
-// Calls send a shorter tail — every spoken turn is a fresh request, and the
-// smaller payload keeps them well under Groq's free-tier token-per-minute caps.
+// `mode` is accepted but no longer changes anything here (the old "call" mode
+// is gone — voice input is now dictation into this same typed chat); routing
+// still happens server-side via the mode sent to /api/chat.
 async function buildContextMessages(history, mode) {
-  const recent = history.slice(mode === "call" ? -10 : -CONTEXT_LIMIT);
+  const recent = history.slice(-CONTEXT_LIMIT);
   const knowledge = await buildKnowledgeContext();
   const sys =
     SYSTEM_PROMPT_BASE +
     ` The user's device says it is now: ${deviceNow()}.` +
-    (mode === "call"
-      ? " The user is talking to you by voice on a phone call — keep replies short (1-3 sentences), conversational, and easy to read aloud. Never use markdown, bullet points, or emoji in the SPOKEN text. IMPORTANT: the hidden action lines are NOT spoken and are NOT markdown — they are stripped by the app before text-to-speech. Voice commands (add/update/watered/bought…) MUST still end your reply with their action lines, exactly like in text chat."
-      : "") +
     knowledge +
     ACTION_CONVENTIONS;
   const msgs = [{ role: "system", content: sys }];
@@ -547,6 +575,8 @@ async function buildChatVisionPrompt(caption) {
     'ATTACH_PHOTO: {"plantId": <plant id>} — saves THIS photo into that plant\'s gallery; use it ' +
     "whenever the user asks to add/attach/save this picture to a plant (you CAN do this — never " +
     "say the photo wasn't uploaded or that you need a URL).\n" +
+    'FOLLOWUP: ["short question 1", "short question 2"] — optional, exactly one line, AFTER any ' +
+    "action lines: 2-3 short questions the USER might want to ask next, in the user's voice.\n" +
     "Emit none of them when not genuinely warranted."
   );
 }
@@ -591,6 +621,35 @@ function extractStatus(text) {
     })
     .trim();
   return { cleanText, status };
+}
+
+// Follow-up suggestions: one optional hidden line, FOLLOWUP: ["…", "…"], with
+// 2-3 short questions the USER might ask next. Chat renders them as tappable
+// chips under the newest reply. Tolerates the same markdown decorations as the
+// STATUS line, and always strips the line from the visible text — a malformed
+// array is dropped silently rather than shown (or read aloud).
+const FOLLOWUP_LINE_RE = /(?:^|\n)[ \t>*`-]*FOLLOWUP\**[ \t]*:[ \t*`]*(\[[^\n]*\])[ \t`*]*(?=\n|$)/gi;
+
+function extractFollowups(text) {
+  let followups = [];
+  const cleanText = (text || "")
+    .replace(FOLLOWUP_LINE_RE, (_, raw) => {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          followups = parsed
+            .map((q) => String(q == null ? "" : q).replace(/\s+/g, " ").trim().slice(0, 80))
+            .filter(Boolean)
+            .slice(0, 3);
+        }
+      } catch (_) {
+        // malformed JSON — the line is hidden either way, just no chips
+      }
+      return "";
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { cleanText, followups };
 }
 
 // Walks a balanced {...} starting at openIdx (string-aware, so braces inside
@@ -666,8 +725,10 @@ function extractPlantUpdate(text) {
 
 async function resolvePlantTarget(action) {
   const plants = await getAllPlants();
+  // Number(): models sometimes send ids as strings ("4"), which used to miss
+  // the strict === match and silently drop the whole action.
   if (action.id != null) {
-    const byId = plants.find((p) => p.id === action.id);
+    const byId = plants.find((p) => p.id === Number(action.id));
     if (byId) return byId;
   }
   if (action.name) {
@@ -681,7 +742,7 @@ async function resolvePlantTarget(action) {
 async function resolveToolTarget(action) {
   const tools = await getAllTools();
   if (action.id != null) {
-    const byId = tools.find((t) => t.id === action.id);
+    const byId = tools.find((t) => t.id === Number(action.id)); // ids may arrive as strings
     if (byId) return byId;
   }
   if (action.name) {
@@ -724,7 +785,7 @@ async function resolveShoppingTarget(action) {
 async function resolveRoutineTarget(action) {
   const routines = await getAllRoutines();
   if (action.id != null) {
-    const byId = routines.find((r) => r.id === action.id);
+    const byId = routines.find((r) => r.id === Number(action.id)); // ids may arrive as strings
     if (byId) return byId;
   }
   if (action.task || action.name) {
@@ -1030,10 +1091,10 @@ async function applyResolvedAction(a) {
   }
 }
 
-// Shared by Chat/Call/Garden: resolves every action pulled from an AI reply,
-// then either applies them immediately (auto mode) or queues them for the
-// user to confirm. Pass setPendingActions=null where there's no confirm UI
-// (voice calls) — confirm mode then skips writes entirely, as before.
+// Shared by Chat/Garden/Inventory: resolves every action pulled from an AI
+// reply, then either applies them immediately (auto mode) or queues them for
+// the user to confirm. Pass setPendingActions=null where there's no confirm
+// UI — confirm mode then skips writes entirely.
 // ctx: { chatId } — lets attach_photo find photos in the current thread.
 // Returns { applied: [description…], queued: n } so the caller can show the
 // user visible proof of what was ACTUALLY saved (not just what the AI claims).
