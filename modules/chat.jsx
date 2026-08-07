@@ -25,7 +25,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
   const [pendingActions, setPendingActions] = useState([]);
   const [pendingPhoto, setPendingPhoto] = useState(null); // { dataUrl, base64, caption }
   const [regeneratingId, setRegeneratingId] = useState(null);
-  const [voice, setVoice] = useState({ state: "idle", seconds: 0, hint: "" });
+  const [voice, setVoice] = useState({ state: "idle", seconds: 0, hint: "", live: "" });
   const [appliedNote, setAppliedNote] = useState(""); // "✓ what actually got saved" toast
   const appliedTimer = useRef(null);
   const fileInputRef = useRef(null); // gallery / files
@@ -286,7 +286,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           </div>
         </div>
       )}
-      <VoiceListeningBar state={voice.state} seconds={voice.seconds} hint={voice.hint} />
+      <VoiceListeningBar state={voice.state} seconds={voice.seconds} hint={voice.hint} live={voice.live} />
       <div className="composer">
         <button
           className="icon-btn"

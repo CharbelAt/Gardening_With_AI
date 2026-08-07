@@ -584,6 +584,14 @@ button { font-family: inherit; }
   white-space: nowrap;
 }
 
+/* The words heard so far, echoed while the button is still held. Clipping to
+   one line is inherited from .listening-text — this only makes it read as
+   speech rather than as UI copy. */
+.voice-live-text {
+  color: var(--text);
+  font-style: italic;
+}
+
 .listening-time {
   font-variant-numeric: tabular-nums;
   font-weight: 600;

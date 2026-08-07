@@ -418,7 +418,7 @@ function HelpModal({ onClose }) {
           <h3>Chat</h3>
           <p>Type gardening questions to Sprout. The camera button takes a new photo; the pictures button picks one from your gallery — either way it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil". After a reply you'll often see a row of suggested follow-up questions — tap one to ask it straight away.</p>
           <h3>Talking instead of typing</h3>
-          <p>Press and HOLD the microphone button in the composer and speak — it listens for as long as you hold it, however long that is, and stops the moment you let go (so it can never hear itself). Release and your words appear in the text box, added to anything already typed. Nothing is sent until you press Send, so you can fix a word first. If Sprout is reading a reply aloud, holding the mic stops it.</p>
+          <p>Press and HOLD the microphone button in the composer and speak — it listens for as long as you hold it, however long that is, and stops the moment you let go (so it can never hear itself). Your words appear in the strip above the composer as you say them, so you can see it's hearing you; let go and they drop into the text box, added to anything already typed. Nothing is sent until you press Send, so you can fix a word first. If Sprout is reading a reply aloud, holding the mic stops it.</p>
           <h3>Chats</h3>
           <p>The chat-bubbles icon in the header lets you keep separate conversation threads, rename them, or start a new one. New chats name themselves after your first message.</p>
           <h3>Garden</h3>
