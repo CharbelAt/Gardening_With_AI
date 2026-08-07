@@ -3,7 +3,7 @@
 // this app is actively being updated — you always want the latest app.jsx
 // over a stale cached copy. The cache is only a fallback for when there's no
 // network at all. AI calls and CDN scripts always go straight to the network.
-const CACHE = "garden-companion-v15"; // v15: call.jsx removed (hold-to-talk dictation replaces calls) — clean cache break
+const CACHE = "garden-companion-v16"; // v16: to-do module added (modules/todos.jsx, DB v6)
 const SHELL = [
   "./",
   "./index.html",
@@ -19,6 +19,7 @@ const SHELL = [
   "./modules/voice.jsx",
   "./modules/inventory.jsx",
   "./modules/routines.jsx",
+  "./modules/todos.jsx",
   "./modules/garden.jsx",
   "./modules/codex.jsx",
 ];

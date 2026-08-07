@@ -1,0 +1,236 @@
+// To-do module: one-off garden tasks ("prune the roses", "repot the mint on
+// Saturday") as a flat checklist — deliberately NOT a card grid, and modelled
+// on the Inventory "to get" panel. Three lists that look similar but mean
+// different things: a ROUTINE recurs on an interval, a TO-GET item is
+// something to BUY, a TO-DO is a single task to DO once and then tick off.
+//
+// Editable via chat too (ADD_TODO/UPDATE_TODO/COMPLETE_TODO/REMOVE_TODO in
+// helpers.jsx). Like every other module this file is a classic script sharing
+// the page's global scope — no import/export (see idb.js's note).
+
+// `todayISO()` and `todoDueDelta()` (0 = today, negative = overdue) live in
+// helpers.jsx — the AI's knowledge context needs them too and that file loads
+// first.
+function todoDueLabel(dueDate) {
+  const delta = todoDueDelta(dueDate);
+  if (delta === null) return "";
+  if (delta === 0) return "today";
+  if (delta < 0) return `overdue ${-delta} d`;
+  if (delta === 1) return "tomorrow";
+  return dueDate;
+}
+
+// The nav badge counts only what actually needs attention today: open items
+// that are overdue or due today (not every open to-do).
+function isTodoUrgent(todo) {
+  if (!todo || todo.done) return false;
+  const delta = todoDueDelta(todo.dueDate);
+  return delta !== null && delta <= 0;
+}
+
+// Open items first (soonest due first, undated last, then id); done items
+// sink to the bottom, most recently completed first.
+function sortTodos(list) {
+  return [...list].sort((a, b) => {
+    if (!!a.done !== !!b.done) return a.done ? 1 : -1;
+    if (a.done) return (b.completedAt || 0) - (a.completedAt || 0) || a.id - b.id;
+    const ad = a.dueDate || "";
+    const bd = b.dueDate || "";
+    if (ad !== bd) {
+      if (!ad) return 1;
+      if (!bd) return -1;
+      return ad < bd ? -1 : 1;
+    }
+    return a.id - b.id;
+  });
+}
+
+function EditTodoModal({ todo, onSave, onCancel }) {
+  const [text, setText] = useState(todo.text || "");
+  const [dueDate, setDueDate] = useState(todo.dueDate || "");
+  const [notes, setNotes] = useState(todo.notes || "");
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Edit to-do</h2>
+        <label>
+          Task
+          <input
+            autoFocus
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && text.trim() && onSave({ text: text.trim(), dueDate, notes })}
+          />
+        </label>
+        <label>
+          Due date (optional)
+          <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+        </label>
+        <label>
+          Notes
+          <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
+        </label>
+        <div className="modal-actions">
+          <button className="btn" disabled={!text.trim()} onClick={() => onSave({ text: text.trim(), dueDate, notes })}>
+            Save
+          </button>
+          <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TodosView({ onNavigate }) {
+  const [todos, setTodos] = useState([]);
+  const [newText, setNewText] = useState("");
+  const [newDue, setNewDue] = useState("");
+  const [editTarget, setEditTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [confirmClearDone, setConfirmClearDone] = useState(false);
+
+  async function refresh() {
+    setTodos(await getAllTodos());
+  }
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const doneCount = todos.filter((t) => t.done).length;
+
+  async function addNew() {
+    const text = newText.trim();
+    if (!text) return;
+    await addTodo({ text, dueDate: newDue });
+    setNewText("");
+    setNewDue("");
+    refresh();
+  }
+
+  async function toggle(t) {
+    const done = !t.done;
+    await updateTodo({ ...t, done, completedAt: done ? Date.now() : null });
+    refresh();
+  }
+
+  async function saveEdit(fields) {
+    await updateTodo({ ...editTarget, ...fields });
+    setEditTarget(null);
+    refresh();
+  }
+
+  async function remove() {
+    await deleteTodo(deleteTarget.id);
+    setDeleteTarget(null);
+    refresh();
+  }
+
+  // Only the completed ones — clearAllTodos() (Settings) is the nuclear option.
+  async function clearCompleted() {
+    for (const t of todos.filter((x) => x.done)) await deleteTodo(t.id);
+    setConfirmClearDone(false);
+    refresh();
+  }
+
+  return (
+    <div className="tab-panel">
+      <div className="view-header">
+        <h2><i className="bi bi-check2-square"></i> To-do</h2>
+        {doneCount > 0 && (
+          <button className="btn btn-ghost small" onClick={() => setConfirmClearDone(true)}>
+            <i className="bi bi-eraser"></i> Clear completed
+          </button>
+        )}
+      </div>
+
+      <div className="todo-panel">
+        <div className="todo-add">
+          <input
+            className="text-input"
+            placeholder="Add a task…"
+            value={newText}
+            onChange={(e) => setNewText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addNew()}
+          />
+          <input
+            className="todo-date"
+            type="date"
+            title="Due date (optional)"
+            value={newDue}
+            onChange={(e) => setNewDue(e.target.value)}
+          />
+          <button className="btn btn-send" onClick={addNew} disabled={!newText.trim()} title="Add">
+            <i className="bi bi-plus-lg"></i>
+          </button>
+        </div>
+
+        {todos.length === 0 && (
+          <div className="empty-state">
+            <i className="bi bi-check2-square"></i>
+            <p>Nothing to do — add a task, or ask Sprout to plan your week.</p>
+            {/* No icon on purpose: .empty-state i is the big 2.6rem glyph. */}
+            <button
+              className="btn btn-ghost small"
+              onClick={() => onNavigate("chat", { draft: "Help me plan my garden to-dos for this week." })}
+            >
+              Ask Sprout
+            </button>
+          </div>
+        )}
+
+        {sortTodos(todos).map((t) => {
+          const urgent = isTodoUrgent(t);
+          return (
+            <div key={t.id} className={t.done ? "todo-row done" : "todo-row"}>
+              <button className="todo-check" onClick={() => toggle(t)} title={t.done ? "Mark not done" : "Check off"}>
+                <i className={t.done ? "bi bi-check-square-fill" : "bi bi-square"}></i>
+              </button>
+              <div className="todo-text">
+                <span className="todo-title">
+                  {t.text}
+                  {t.dueDate && (
+                    <span className={urgent ? "todo-due overdue" : "todo-due"}>
+                      <i className="bi bi-calendar-event"></i> {todoDueLabel(t.dueDate)}
+                    </span>
+                  )}
+                </span>
+                {t.notes && <span className="todo-notes">{t.notes}</span>}
+              </div>
+              <button className="icon-btn small" onClick={() => setEditTarget(t)} title="Edit">
+                <i className="bi bi-pencil"></i>
+              </button>
+              <button className="icon-btn small" onClick={() => setDeleteTarget(t)} title="Delete">
+                <i className="bi bi-trash"></i>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {editTarget && (
+        <EditTodoModal todo={editTarget} onSave={saveEdit} onCancel={() => setEditTarget(null)} />
+      )}
+
+      {deleteTarget && (
+        <ConfirmModal
+          title="Delete to-do?"
+          message={`Remove "${deleteTarget.text || "this task"}" from your to-do list?`}
+          confirmLabel="Delete"
+          onConfirm={remove}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
+
+      {confirmClearDone && (
+        <ConfirmModal
+          title="Clear completed?"
+          message={`Delete ${doneCount} completed to-do${doneCount === 1 ? "" : "s"}. This can't be undone.`}
+          confirmLabel="Clear"
+          onConfirm={clearCompleted}
+          onCancel={() => setConfirmClearDone(false)}
+        />
+      )}
+    </div>
+  );
+}

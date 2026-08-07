@@ -99,6 +99,27 @@ function daysSince(ts) {
   return Math.floor((Date.now() - ts) / (24 * 60 * 60 * 1000));
 }
 
+// Today as "YYYY-MM-DD" in the DEVICE's timezone — NOT toISOString(), which is
+// UTC and lands on the wrong calendar day either side of midnight. Matches the
+// format an <input type="date"> stores (to-do due dates).
+function todayISO() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Whole days from today to a "YYYY-MM-DD" date: 0 = today, negative = overdue,
+// null when there's no (or an unparseable) date. Lives here rather than in
+// todos.jsx because buildKnowledgeContext (below) needs it too, and helpers.jsx
+// loads first.
+function todoDueDelta(dueDate) {
+  if (!dueDate) return null;
+  const due = Date.parse(`${dueDate}T00:00:00`);
+  if (isNaN(due)) return null;
+  const today = Date.parse(`${todayISO()}T00:00:00`);
+  return Math.round((due - today) / (24 * 60 * 60 * 1000));
+}
+
 // First user message → chat title ("What's wrong with my basil…").
 function autoTitleFromText(text) {
   const clean = (text || "").replace(/\s+/g, " ").trim();
@@ -338,14 +359,33 @@ function tagsLabel(item) {
 // prompt so the AI knows the user's current garden state without needing
 // any tool-calling machinery just to read data.
 async function buildKnowledgeContext() {
-  const [tools, routines, plants, shopping] = await Promise.all([
+  const [tools, routines, plants, shopping, todos] = await Promise.all([
     getAllTools(),
     getAllRoutines(),
     getAllPlants(),
     getAllShoppingItems(),
+    getAllTodos(),
   ]);
 
   const parts = [];
+
+  const openTodos = todos.filter((t) => !t.done);
+  const doneTodos = todos.length - openTodos.length;
+  if (todos.length) {
+    parts.push(
+      "To-do list (one-off tasks): " +
+        (openTodos.length
+          ? openTodos
+              .map((t) => {
+                const delta = todoDueDelta(t.dueDate);
+                const due = t.dueDate ? `, due ${t.dueDate}${delta !== null && delta < 0 ? " OVERDUE" : ""}` : "";
+                return `id:${t.id} "${t.text}"${due}${t.notes ? ` (${t.notes})` : ""}`;
+              })
+              .join(", ")
+          : "nothing open") +
+        ` — plus ${doneTodos} already completed`
+    );
+  }
 
   if (shopping.length) {
     parts.push(
@@ -430,6 +470,10 @@ const ACTION_CONVENTIONS =
   'ADD_TOGET: {"fields": {"name": "...", "quantity": 1, "notes": "..."}} — puts something on the to-get (shopping) list\n' +
   'UPDATE_TOGET: {"id": <to-get id>, "fields": {"done": true, "quantity": 2, "name": "..."}}\n' +
   'REMOVE_TOGET: {"id": <to-get id>}\n' +
+  'ADD_TODO: {"fields": {"text": "...", "dueDate": "YYYY-MM-DD", "notes": "..."}} — a one-off task on the to-do list (dueDate/notes optional)\n' +
+  'UPDATE_TODO: {"id": <to-do id>, "fields": {"text": "...", "dueDate": "YYYY-MM-DD", "notes": "..."}}\n' +
+  'COMPLETE_TODO: {"id": <to-do id>} — ticks a to-do off\n' +
+  'REMOVE_TODO: {"id": <to-do id>}\n' +
   "WORKED EXAMPLES:\n" +
   'User says: "I bought 2 bags of tomato fertilizer and planted mint in the balcony pot" — ' +
   "your reply chats normally, then ends with these two lines:\n" +
@@ -439,6 +483,8 @@ const ACTION_CONVENTIONS =
   'UPDATE_PLANT: {"id": 4, "fields": {"notes": "from a cutting; looked droopy this morning"}}\n' +
   'User sends a photo and says "add this picture to the basil" (basil is id:4) — your reply ends with:\n' +
   'ATTACH_PHOTO: {"plantId": 4}\n' +
+  'User says: "remind me to prune the roses this weekend" (today is Thursday 2026-08-06) — your reply ends with:\n' +
+  'ADD_TODO: {"fields": {"text": "Prune the roses", "dueDate": "2026-08-08"}}\n' +
   "RULES:\n" +
   "- ACT IN THIS REPLY: when the user asks for a change, the action line(s) must be at the end " +
   "of THIS message — act first, then your visible text simply confirms it. NEVER answer " +
@@ -466,6 +512,11 @@ const ACTION_CONVENTIONS =
   '- To-get list: "I need to buy X" / "remind me to get X" → ADD_TOGET. When the user says ' +
   "they BOUGHT something that's on the list: UPDATE_TOGET with done true AND ADD_TOOL so it " +
   "lands in their inventory.\n" +
+  "- THREE DIFFERENT LISTS, pick the right one: a TO-DO is a one-off task to DO once " +
+  '("prune the roses", "repot the mint Saturday") → ADD_TODO; a TO-GET is something to BUY ' +
+  '("more potting soil") → ADD_TOGET; a ROUTINE is a task that RECURS on an interval ' +
+  '("water the ficus every 3 days") → ADD_ROUTINE. When the user finishes a one-off task ' +
+  '("I pruned the roses"), COMPLETE_TODO it — don\'t add a new one.\n' +
   "- Never invent changes the user didn't ask for, and don't re-emit an action already applied " +
   "earlier in the conversation. BUT when the user explicitly asks you to create demo/sample/" +
   "example data, that IS a real request — emit one action line per item you create.\n" +
@@ -485,8 +536,8 @@ const ACTION_CONVENTIONS =
 // in the SAME reply instead of a later one.
 const ACTION_REMINDER =
   "REMINDER — check before you answer: does the user's latest message ask to add, update, " +
-  "remove, log, note, or track anything (plant, tool, routine, to-get/shopping item, watering, " +
-  "purchase), to create demo/sample data (allowed — one action line per item), or to attach a " +
+  "remove, log, note, or track anything (plant, tool, routine, to-do task, to-get/shopping item, " +
+  "watering, purchase), to create demo/sample data (allowed — one action line per item), or to attach a " +
   "photo they sent to a plant (ATTACH_PHOTO) or set a cover (SET_COVER — you CAN do these)? " +
   "If yes: end THIS reply with the matching action line(s), exactly per the formulas in your " +
   "instructions — act now, in this reply, never later. If unsure which item they mean, ask " +
@@ -603,9 +654,17 @@ const ACTION_TYPE_MAP = {
   ADD_TOGET: "add_toget",
   UPDATE_TOGET: "update_toget",
   REMOVE_TOGET: "remove_toget",
+  ADD_TODO: "add_todo",
+  UPDATE_TODO: "update_todo",
+  COMPLETE_TODO: "complete_todo",
+  REMOVE_TODO: "remove_todo",
 };
+// NOTE: the TOGET alternatives come BEFORE the TODO ones — every keyword here
+// is a complete token so neither can swallow the other, but keeping the longer
+// "ADD_TOGET"/"UPDATE_TOGET" first makes that independent of the engine's
+// leftmost-alternative rule (guarded by a test in run_app2.js).
 const ACTION_START_RE =
-  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|ATTACH_PHOTO|SET_COVER|ADD_TOGET|UPDATE_TOGET|REMOVE_TOGET)\**[ \t]*:[ \t\n]*\{/g;
+  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|ATTACH_PHOTO|SET_COVER|ADD_TOGET|UPDATE_TOGET|REMOVE_TOGET|ADD_TODO|UPDATE_TODO|COMPLETE_TODO|REMOVE_TODO)\**[ \t]*:[ \t\n]*\{/g;
 
 // Completion flag: every reply is asked to end with STATUS: done|continue.
 // "continue" makes the chat immediately re-prompt so no request is ever left
@@ -782,6 +841,21 @@ async function resolveShoppingTarget(action) {
   return null;
 }
 
+async function resolveTodoTarget(action) {
+  const todos = await getAllTodos();
+  if (action.id != null) {
+    const byId = todos.find((t) => t.id === Number(action.id)); // ids may arrive as strings
+    if (byId) return byId;
+  }
+  const wanted = action.text || action.name;
+  if (wanted) {
+    const lower = String(wanted).toLowerCase();
+    const byText = todos.find((t) => (t.text || "").toLowerCase().includes(lower));
+    if (byText) return byText;
+  }
+  return null;
+}
+
 async function resolveRoutineTarget(action) {
   const routines = await getAllRoutines();
   if (action.id != null) {
@@ -916,6 +990,25 @@ async function applyShoppingUpdate(item, fields) {
   await updateShoppingItem(updated);
 }
 
+async function applyTodoAdd(fields) {
+  await addTodo({
+    text: fields.text || fields.task || "New task",
+    dueDate: fields.dueDate || "",
+    notes: fields.notes || "",
+  });
+}
+
+// COMPLETE_TODO routes here too (fields = { done: true }) — the completedAt
+// stamp is derived, never taken from the model.
+async function applyTodoUpdate(todo, fields) {
+  const updated = { ...todo, ...fields };
+  if (fields.done != null) {
+    updated.done = !!fields.done;
+    updated.completedAt = updated.done ? Date.now() : null;
+  }
+  await updateTodo(updated);
+}
+
 async function applyRoutineAdd(fields) {
   await addRoutine({
     task: fields.task || "New routine",
@@ -996,6 +1089,20 @@ async function resolveAction(action, ctx) {
       const item = await resolveShoppingTarget(action);
       return item ? { type: "remove_toget", item } : null;
     }
+    case "add_todo":
+      return { type: "add_todo", fields: action.fields || {} };
+    case "update_todo": {
+      const todo = await resolveTodoTarget(action);
+      return todo ? { type: "update_todo", todo, fields: action.fields || {} } : null;
+    }
+    case "complete_todo": {
+      const todo = await resolveTodoTarget(action);
+      return todo ? { type: "complete_todo", todo } : null;
+    }
+    case "remove_todo": {
+      const todo = await resolveTodoTarget(action);
+      return todo ? { type: "remove_todo", todo } : null;
+    }
     case "update": {
       const plant = await resolvePlantTarget(action);
       return plant ? { type: "update_plant", plant, fields: action.fields || {} } : null;
@@ -1055,6 +1162,14 @@ function describeAction(a) {
         : `Update to-get "${a.item.name}": ${fieldsText(a.fields)}`;
     case "remove_toget":
       return `Remove "${a.item.name}" from the to-get list`;
+    case "add_todo":
+      return `Add to-do "${a.fields.text || "New task"}"${a.fields.dueDate ? ` (due ${a.fields.dueDate})` : ""}`;
+    case "update_todo":
+      return `Update to-do "${a.todo.text}": ${fieldsText(a.fields)}`;
+    case "complete_todo":
+      return `Tick off to-do "${a.todo.text}"`;
+    case "remove_todo":
+      return `Remove to-do "${a.todo.text}"`;
     default:
       return "Unknown change";
   }
@@ -1088,6 +1203,14 @@ async function applyResolvedAction(a) {
       return applyShoppingUpdate(a.item, a.fields);
     case "remove_toget":
       return deleteShoppingItem(a.item.id);
+    case "add_todo":
+      return applyTodoAdd(a.fields);
+    case "update_todo":
+      return applyTodoUpdate(a.todo, a.fields);
+    case "complete_todo":
+      return applyTodoUpdate(a.todo, { done: true });
+    case "remove_todo":
+      return deleteTodo(a.todo.id);
   }
 }
 

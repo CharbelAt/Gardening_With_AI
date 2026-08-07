@@ -4,7 +4,7 @@
 // editing files and committing to GitHub Pages (no build step).
 //
 // Navigation model: a persistent bottom bar switches the main view
-// (chat/garden/routines/inventory/codex). Voice input is hold-to-talk
+// (chat/garden/routines/todos/inventory/codex). Voice input is hold-to-talk
 // dictation in the chat composer (VoiceHoldButton in voice.jsx) — there is no
 // separate call view or call mode. Cross-module links (e.g. a plant's "Ask
 // Sprout" button, a routine's linked plant, an item's Codex button) go through
@@ -14,7 +14,7 @@ function App() {
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [view, setView] = useState("chat"); // chat | garden | inventory | routines | codex
+  const [view, setView] = useState("chat"); // chat | garden | routines | todos | inventory | codex
   const [navItemId, setNavItemId] = useState(null); // open this item's detail page on view mount
   const [chatDraft, setChatDraft] = useState(""); // prefilled composer text from "Ask Sprout" buttons
   const [codexQuery, setCodexQuery] = useState(""); // prefilled codex search from item "Codex" buttons
@@ -34,13 +34,20 @@ function App() {
     if (meta) meta.setAttribute("content", theme === "dark" ? "#101510" : "#2e6b34");
   }, [theme]);
 
-  // Keep the nav badges fresh (due routines + open to-get items) — cheap
-  // IndexedDB reads, refreshed whenever the user changes views.
+  // Keep the nav badges fresh (due routines + open to-get items + to-dos that
+  // are overdue or due today) — cheap IndexedDB reads, refreshed whenever the
+  // user changes views.
   const [togetCount, setTogetCount] = useState(0);
+  const [todoCount, setTodoCount] = useState(0);
   async function refreshDueCount() {
-    const [routines, shopping] = await Promise.all([getAllRoutines(), getAllShoppingItems()]);
+    const [routines, shopping, todos] = await Promise.all([
+      getAllRoutines(),
+      getAllShoppingItems(),
+      getAllTodos(),
+    ]);
     setDueCount(routines.filter(isRoutineDue).length);
     setTogetCount(shopping.filter((s) => !s.done).length);
+    setTodoCount(todos.filter(isTodoUrgent).length);
   }
   useEffect(() => {
     refreshDueCount();
@@ -180,10 +187,17 @@ function App() {
         {view === "garden" && <GardenView initialId={navItemId} onNavigate={navigate} />}
         {view === "inventory" && <InventoryView initialId={navItemId} onNavigate={navigate} />}
         {view === "routines" && <RoutinesView initialId={navItemId} onNavigate={navigate} />}
+        {view === "todos" && <TodosView onNavigate={navigate} />}
         {view === "codex" && <CodexView initialQuery={codexQuery} onNavigate={navigate} />}
       </main>
 
-      <BottomNav view={view} onNavigate={navigate} dueCount={dueCount} togetCount={togetCount} />
+      <BottomNav
+        view={view}
+        onNavigate={navigate}
+        dueCount={dueCount}
+        togetCount={togetCount}
+        todoCount={todoCount}
+      />
 
       {showChatList && (
         <ChatListModal

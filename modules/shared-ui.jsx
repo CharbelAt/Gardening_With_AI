@@ -81,6 +81,7 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
     await clearAllRoutines();
     await clearAllCodexEntries();
     await clearAllShoppingItems();
+    await clearAllTodos();
     setConfirmClear(false);
     onCleared();
   }
@@ -145,7 +146,7 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
       {confirmClear && (
         <ConfirmModal
           title="Clear ALL data?"
-          message="Deletes everything stored on this device: chats, messages, plants, tools, routines, and saved codex entries. This can't be undone."
+          message="Deletes everything stored on this device: chats, messages, plants, tools, routines, to-dos, the to-get list, and saved codex entries. This can't be undone."
           confirmLabel="Delete everything"
           onConfirm={clearMemory}
           onCancel={() => setConfirmClear(false)}
@@ -372,11 +373,12 @@ const NAV_ITEMS = [
   { key: "chat", label: "Chat", icon: "bi-chat-dots" },
   { key: "garden", label: "Garden", icon: "bi-flower3" },
   { key: "routines", label: "Routines", icon: "bi-arrow-repeat" },
+  { key: "todos", label: "To-do", icon: "bi-check2-square" },
   { key: "inventory", label: "Inventory", icon: "bi-box-seam" },
   { key: "codex", label: "Codex", icon: "bi-book" },
 ];
 
-function BottomNav({ view, onNavigate, dueCount, togetCount }) {
+function BottomNav({ view, onNavigate, dueCount, togetCount, todoCount }) {
   const activeKey = view;
   return (
     <nav className="bottom-nav">
@@ -394,6 +396,9 @@ function BottomNav({ view, onNavigate, dueCount, togetCount }) {
             {item.key === "inventory" && togetCount > 0 && (
               <span className="nav-badge">{togetCount > 9 ? "9+" : togetCount}</span>
             )}
+            {item.key === "todos" && todoCount > 0 && (
+              <span className="nav-badge">{todoCount > 9 ? "9+" : todoCount}</span>
+            )}
           </span>
           <span className="bottom-nav-label">{item.label}</span>
         </button>
@@ -409,7 +414,7 @@ function HelpModal({ onClose }) {
         <h2>How to use Garden Companion</h2>
         <div className="help-content">
           <h3>Getting around</h3>
-          <p>The bar at the bottom switches between Chat, Garden, Routines, Inventory, and Codex. The gear in the header opens Settings.</p>
+          <p>The bar at the bottom switches between Chat, Garden, Routines, To-do, Inventory, and Codex. The gear in the header opens Settings.</p>
           <h3>Chat</h3>
           <p>Type gardening questions to Sprout. The camera button takes a new photo; the pictures button picks one from your gallery — either way it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil". After a reply you'll often see a row of suggested follow-up questions — tap one to ask it straight away.</p>
           <h3>Talking instead of typing</h3>
@@ -420,6 +425,8 @@ function HelpModal({ onClose }) {
           <p>Track your plants: name, location, planting date, and a full care history. Take photos from a plant's page to build its timeline, tap any photo to view it full-screen, and use "Ask Sprout" to jump into chat about that specific plant.</p>
           <h3>Routines</h3>
           <p>Recurring care tasks with a "Due" badge when overdue (also shown on the bottom bar). Link a routine to a plant with a care action — marking "Water the ficus" done then updates the ficus's watering record automatically.</p>
+          <h3>To-do</h3>
+          <p>One-off tasks that aren't routines: "prune the roses", "repot the mint on Saturday". Type one in the box at the top (a due date is optional) and tap + or press Enter. Tick a task off when it's done and it drops to the bottom with a line through it — "Clear completed" tidies those away. Anything overdue or due today shows a badge on the To-do tab. Sprout can add, update, tick off, and remove tasks for you: just say "remind me to prune the roses this weekend".</p>
           <h3>Inventory</h3>
           <p>Your tools and supplies as cards — tap one for details or to edit it. Photograph an item from its page and Sprout reads the label for you: product type, active ingredients, dosage and safety notes land in a "Product info" section (and the picture becomes the item's photo). Telling Sprout what you bought or used up keeps this in sync too. The "To get" tab is your shopping checklist: add items there (or say "I need to buy…"), check them off when bought, and move them straight into your inventory. Open items show as a badge on the Inventory tab.</p>
           <h3>Tags</h3>
@@ -429,7 +436,7 @@ function HelpModal({ onClose }) {
           <h3>Settings</h3>
           <p>Set your backend URL and client secret (from your VPS), choose whether AI-suggested updates apply automatically or ask first, and clear local data if needed.</p>
           <h3>Your data</h3>
-          <p>Everything (chats, plants, tools, routines, saved codex entries) is stored only in this browser — nothing is synced anywhere else.</p>
+          <p>Everything (chats, plants, tools, routines, to-dos, saved codex entries) is stored only in this browser — nothing is synced anywhere else.</p>
         </div>
         <div className="modal-actions">
           <button className="btn" onClick={onClose}>Close</button>

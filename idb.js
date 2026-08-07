@@ -1,7 +1,7 @@
 // Minimal IndexedDB wrapper — this IS the app's "memory". Everything here stays
 // on this device/browser only (no server-side sync).
 const DB_NAME = "garden-companion";
-const DB_VERSION = 5; // v5 adds the to-get shopping list store
+const DB_VERSION = 6; // v6 adds the to-do (one-off tasks) store
 const STORE_MESSAGES = "messages";
 const STORE_TOOLS = "tools";
 const STORE_ROUTINES = "routines";
@@ -9,6 +9,7 @@ const STORE_PLANTS = "plants";
 const STORE_CHATS = "chats";
 const STORE_CODEX = "codex";
 const STORE_SHOPPING = "shopping";
+const STORE_TODOS = "todos";
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -35,6 +36,9 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains(STORE_SHOPPING)) {
         db.createObjectStore(STORE_SHOPPING, { keyPath: "id", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains(STORE_TODOS)) {
+        db.createObjectStore(STORE_TODOS, { keyPath: "id", autoIncrement: true });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -244,6 +248,35 @@ function deleteShoppingItem(id) {
 }
 function clearAllShoppingItems() {
   return clearStore(STORE_SHOPPING);
+}
+
+// ---------- to-do list (one-off garden tasks) ----------
+
+// todo: { text, done: boolean, completedAt: timestamp|null,
+//         dueDate: "YYYY-MM-DD"|"" (optional), notes (optional), createdAt }
+// Distinct from routines (which recur on an interval) and from the to-get
+// shopping list (things to BUY): a to-do is a single task to DO once.
+function addTodo(todo) {
+  return addRecord(STORE_TODOS, {
+    text: todo.text || "",
+    done: false,
+    completedAt: null,
+    dueDate: todo.dueDate || "",
+    notes: todo.notes || "",
+    createdAt: Date.now(),
+  });
+}
+function getAllTodos() {
+  return getAllRecords(STORE_TODOS);
+}
+function updateTodo(todo) {
+  return putRecord(STORE_TODOS, todo);
+}
+function deleteTodo(id) {
+  return deleteRecord(STORE_TODOS, id);
+}
+function clearAllTodos() {
+  return clearStore(STORE_TODOS);
 }
 
 // ---------- routines (recurring care tasks) ----------

@@ -246,12 +246,19 @@ button { font-family: inherit; }
   position: relative;
   font-size: 1.25rem;
   line-height: 1;
-  padding: 4px 14px;
+  padding: 4px 11px;
   border-radius: 999px;
   transition: background 0.18s ease, color 0.18s ease;
 }
 
-.bottom-nav-label { font-size: 0.66rem; font-weight: 550; letter-spacing: 0.02em; }
+/* Six tabs (To-do joined the bar) have to fit a 360px viewport: the label is a
+   touch smaller and never wraps, and the icon pill lost a little padding. */
+.bottom-nav-label {
+  font-size: 0.6rem;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
 
 .bottom-nav-item.active { color: var(--primary); }
 .dark .bottom-nav-item.active { color: var(--primary-soft); }
@@ -1069,6 +1076,96 @@ button { font-family: inherit; }
 
 .toget-row.done { opacity: 0.65; }
 .toget-row.done .toget-name { text-decoration: line-through; color: var(--text-dim); }
+
+/* ---------- to-do list (one-off tasks) ---------- */
+/* Same checklist shape as the to-get panel above, plus a due-date chip. */
+
+.todo-panel {
+  padding: 12px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.todo-add { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+
+.todo-date {
+  flex-shrink: 0;
+  width: 42%;
+  max-width: 150px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 10px 12px;
+}
+
+.todo-date:focus { outline: none; border-color: var(--primary-soft); }
+
+.todo-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  box-shadow: var(--shadow-1);
+}
+
+.todo-check {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: var(--primary-soft);
+  padding: 6px;
+  min-width: 40px;
+}
+
+.todo-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+
+.todo-title {
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.todo-notes { font-size: 0.75rem; color: var(--text-faint); }
+
+.todo-due {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.todo-due i { font-size: 0.68rem; color: var(--primary-soft); }
+
+/* Overdue or due today — same warning colours as a due routine's chip. */
+.todo-due.overdue {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.todo-due.overdue i { color: var(--warn); }
+
+.todo-row.done { opacity: 0.65; }
+.todo-row.done .todo-title { text-decoration: line-through; color: var(--text-dim); }
+.todo-row.done .todo-due { opacity: 0.8; }
 
 /* "✓ Applied" toast — proof of what the AI's actions actually saved */
 .applied-banner {

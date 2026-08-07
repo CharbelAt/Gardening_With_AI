@@ -14,6 +14,13 @@
 //      getUserMedia is missing or the mic permission is refused.
 // Neither available → the button renders disabled with an explanatory title.
 
+// Flips true the first time /api/transcribe 404s (route missing from an
+// older, un-updated server.js). Once true, holds skip straight to
+// SpeechRecognition instead of re-recording audio the server will just
+// 404 on again. Plain global — this file is a classic script, no module
+// system to hold state in.
+let transcribeUnavailable = false;
+
 const VOICE_MIN_HOLD_MS = 300; // shorter than this is a tap, not a hold
 
 function getSpeechRecognitionCtor() {
@@ -220,7 +227,9 @@ function VoiceHoldButton({ onTranscript, onError, onStateChange, disabled }) {
       setSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000));
     }, 250);
 
-    if (recordSupported) {
+    // Once the server has proven it has no /api/transcribe route, stop
+    // recording audio for it — go straight to the speech fallback below.
+    if (recordSupported && !transcribeUnavailable) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         if (!holdingRef.current) {
@@ -255,7 +264,15 @@ function VoiceHoldButton({ onTranscript, onError, onStateChange, disabled }) {
     holdingRef.current = false;
     clearInterval(tickRef.current);
     setState("idle");
-    if (onError) onError("Microphone unavailable — check this browser's mic permission.");
+    if (onError) {
+      // No SpeechRecognition to fall back to either. If we already know the
+      // server lacks /api/transcribe, say that instead of blaming the mic.
+      onError(
+        transcribeUnavailable
+          ? "Voice needs the server update — transcription endpoint missing (404)."
+          : "Microphone unavailable — check this browser's mic permission."
+      );
+    }
   }
 
   function endHold(e) {
@@ -325,7 +342,22 @@ function VoiceHoldButton({ onTranscript, onError, onStateChange, disabled }) {
       if (text) onTranscript(text);
       else flashHint("Didn't catch that");
     } catch (err) {
-      if (onError) onError(err.message);
+      // A 404 means this server.js predates /api/transcribe entirely — that's
+      // not transient like a 503 or network blip, so remember it and stop
+      // hitting the endpoint. The recorded audio is lost either way (speech
+      // recognition can't retranscribe a blob); this one-time message says why.
+      if (!transcribeUnavailable && /\(404\)/.test(err.message || "")) {
+        transcribeUnavailable = true;
+        if (onError) {
+          onError(
+            getSpeechRecognitionCtor()
+              ? "Your server doesn't have the transcription endpoint yet (update server.js on the VPS, then pm2 restart). Using on-device recognition instead."
+              : "Voice needs the server update — transcription endpoint missing (404)."
+          );
+        }
+      } else if (onError) {
+        onError(err.message);
+      }
     } finally {
       setState("idle");
     }
