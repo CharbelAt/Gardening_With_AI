@@ -12,11 +12,13 @@
 // long an abandoned mic can sit open.
 //
 // Two transcription paths:
-//   1. Browser SpeechRecognition (webkit-prefixed), continuous + interim,
-//      auto-restarted for as long as the toggle is on. PRIMARY, because it
-//      hands words back WHILE the user is still talking — the listening bar
-//      echoes them in real time, the way the old call mode did. A
-//      record-then-upload round trip structurally cannot do that.
+//   1. Browser SpeechRecognition (webkit-prefixed), ONE UTTERANCE PER SESSION
+//      (continuous = false) with interim results, restarted for as long as the
+//      toggle is on. PRIMARY, because it hands words back WHILE the user is
+//      still talking — the listening bar echoes them in real time, the way the
+//      old call mode did. A record-then-upload round trip structurally cannot
+//      do that. See the block comment above startSpeech's recognizer setup for
+//      why continuous is false; it is the whole anti-duplication design.
 //   2. MediaRecorder → base64 → POST /api/transcribe (Groq Whisper, server
 //      side). FALLBACK, only for browsers with no SpeechRecognition at all
 //      (Firefox, some in-app webviews): more accurate, but silent until the
@@ -44,76 +46,20 @@ function getSpeechRecognitionCtor() {
   return window.SpeechRecognition || window.webkitSpeechRecognition || null;
 }
 
-// ---------------------------------------------------------------------------
-// Transcript assembly. Read this before "simplifying" anything below it.
-//
-// SpeechRecognition duplicates words in two independent ways, and the old
-// `heardRef.final += …` per onresult walked into both of them:
-//
-//   1. WITHIN one recognition session, `event.results` is CUMULATIVE — every
-//      onresult re-delivers the entries the previous ones already carried.
-//      Appending each event's finals therefore counts them once per event,
-//      which is where "water water water the the tomatoes" came from. Cure:
-//      never +=; rebuild the whole session transcript from results[0] on
-//      every event (see rec.onresult).
-//   2. ACROSS the automatic restarts (rec.onend → start()), Chrome on Android
-//      frequently REPLAYS the finished session's finals as the opening results
-//      of the new one. Rebuilding does not help there — the replay arrives as
-//      genuinely new results in a genuinely new session. Cure: trimOverlap(),
-//      applied at every seam (bank-on-restart, banked→final, final→interim).
-// ---------------------------------------------------------------------------
-
-// Splits a transcript into display words plus the normalized keys the overlap
-// test compares on: case and the punctuation a recognizer sprinkles in
-// ("tomatoes." vs "tomatoes") must not make a replayed word look new. The two
-// arrays stay index-aligned, so a match found on keys can be sliced off words.
-function voiceWords(text) {
-  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
-  return {
-    words,
-    keys: words.map((w) => w.toLowerCase().replace(/[.,!?;:'"“”‘’…]/g, "")),
-  };
+// The recognizer emits ragged whitespace (leading spaces on chunks, none
+// between them); everything that gets shown or delivered goes through here.
+function collapseSpaces(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
 }
 
-// Returns the part of `next` that is not already sitting at the end of `prev`:
-// the longest run of words that is both a tail of `prev` and a head of `next`
-// is dropped. "" means `next` was nothing but replay. This is what makes every
-// seam idempotent — banking the same session twice, or Android replaying the
-// last session verbatim, both collapse to nothing new.
-// Deliberate trade-off: a user who genuinely repeats a phrase across a restart
-// boundary loses the repeat. Duplicated words are the bug that was reported;
-// this is the cheaper failure.
-function trimOverlap(prev, next) {
-  const b = voiceWords(next);
-  if (b.words.length === 0) return "";
-  const a = voiceWords(prev);
-  if (a.words.length === 0) return b.words.join(" ");
-  for (let n = Math.min(a.keys.length, b.keys.length); n > 0; n--) {
-    let same = true;
-    for (let i = 0; i < n; i++) {
-      const key = a.keys[a.keys.length - n + i];
-      // Empty keys (a token that was pure punctuation) never count as a match.
-      if (!key || key !== b.keys[i]) {
-        same = false;
-        break;
-      }
-    }
-    if (same) return b.words.slice(n).join(" ");
-  }
-  return b.words.join(" ");
-}
-
-// Everything heard so far as one line: the segments banked from earlier
-// recognition sessions, then this session's finals, then its interim guess —
-// with the overlap guard applied at both seams. The live echo in the bar and
-// the text handed over on stop both come through here, so the two can never
-// disagree and neither can stutter.
-function joinHeard(segments, session) {
-  const banked = (segments || []).join(" ");
-  const final = session ? session.final : "";
-  const interim = session ? session.interim : "";
-  const withFinal = `${banked} ${trimOverlap(banked, final)}`;
-  return `${withFinal} ${trimOverlap(withFinal, interim)}`.replace(/\s+/g, " ").trim();
+// Everything heard so far as one line: the utterances already committed, then
+// the interim guess for the utterance still in progress. A plain join — there
+// is deliberately no de-duplication here, because with continuous = false
+// there is nothing to de-duplicate (see startSpeech). The live echo in the bar
+// and the text handed over on stop both come through here, so the two can
+// never disagree.
+function joinHeard(utterances, interim) {
+  return collapseSpaces(`${(utterances || []).join(" ")} ${interim || ""}`);
 }
 
 function canRecordAudio() {
@@ -198,8 +144,11 @@ function VoiceButton({ onTranscript, onError, onStateChange, disabled }) {
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const recognitionRef = useRef(null);
-  const segmentsRef = useRef([]); // finals banked from earlier SR sessions
-  const sessionRef = useRef({ final: "", interim: "" }); // the current session
+  const utterancesRef = useRef([]); // one committed final per recognition session
+  const interimRef = useRef(""); // the in-flight guess; never committed
+  // Bumped on every rec.start() and by killRecognition(). Handlers capture the
+  // id they were attached with and ignore anything from an older session.
+  const sessionIdRef = useRef(0);
   const tickRef = useRef(null);
   const maxTimerRef = useRef(null);
   const autoStoppedRef = useRef(false); // 90s stop, hinted after the upload
@@ -240,9 +189,17 @@ function VoiceButton({ onTranscript, onError, onStateChange, disabled }) {
     }
   }
 
+  // Detach BOTH handlers before aborting. onend would restart recognition, and
+  // an aborting recognizer can still deliver one last onresult — which is
+  // exactly how a final could land in the refs AFTER the transcript had already
+  // been read out of them, showing the same words twice. Bumping the session id
+  // invalidates any handler closure still in flight for the same reason.
   function killRecognition() {
+    sessionIdRef.current += 1;
     if (recognitionRef.current) {
-      recognitionRef.current.onend = null; // detach before aborting, or it restarts
+      recognitionRef.current.onresult = null;
+      recognitionRef.current.onend = null;
+      recognitionRef.current.onerror = null;
       try {
         recognitionRef.current.abort();
       } catch (_) {}
@@ -265,23 +222,34 @@ function VoiceButton({ onTranscript, onError, onStateChange, disabled }) {
     stopStream();
   }
 
-  // Move the finished session's finals into segmentsRef, minus whatever is
-  // just a replay of what is already banked, then clear the session so the
-  // next onresult rebuild starts from nothing.
-  function bankSession() {
-    const fresh = trimOverlap(segmentsRef.current.join(" "), sessionRef.current.final);
-    if (fresh) segmentsRef.current.push(fresh);
-    // Anything still interim when a session ends is dropped: the audio behind
-    // it is gone, and it is usually a half-guess at words the finals already
-    // contain.
-    sessionRef.current = { final: "", interim: "" };
-  }
-
+  // -------------------------------------------------------------------------
+  // WHY continuous = false. DO NOT "optimize" this back to true.
+  //
+  // With continuous = true, one recognition session spans the whole dictation
+  // and `event.results` is a growing, cumulative array. Chrome on Android is
+  // well known for REPLAYING already-final entries inside that array — the
+  // same words arrive again as fresh results — so any strategy built on top of
+  // it (append-per-event, rebuild-from-index-0, fuzzy overlap trimming) is
+  // guessing after the fact about which words are new. That guessing is what
+  // shipped before, and it still duplicated.
+  //
+  // With continuous = false, a session covers exactly ONE utterance: the
+  // recognizer stops at the first natural pause, we take that one final,
+  // commit it once, and start a brand-new session for the next utterance. The
+  // results array never accumulates across utterances, so there is nothing to
+  // replay and nothing to de-duplicate — duplication is structurally
+  // impossible rather than heuristically cleaned up.
+  //
+  // This mirrors the old voice-call feature (modules/call.jsx, deleted), which
+  // used exactly this setup — continuous = false, interim results on, iterate
+  // from event.resultIndex, restart on onend — and never duplicated a word on
+  // the user's device.
+  // -------------------------------------------------------------------------
   function startSpeech() {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) return false;
-    segmentsRef.current = [];
-    sessionRef.current = { final: "", interim: "" };
+    utterancesRef.current = [];
+    interimRef.current = "";
     let rec;
     try {
       rec = new Ctor();
@@ -289,25 +257,9 @@ function VoiceButton({ onTranscript, onError, onStateChange, disabled }) {
       return false;
     }
     rec.lang = "en-US";
-    rec.continuous = true;
+    rec.continuous = false; // one utterance per session — see the block above
     rec.interimResults = true;
-    rec.onresult = (event) => {
-      // Rebuild this session from index 0 — NEVER += across events. See the
-      // block comment above trimOverlap: event.results is cumulative, so this
-      // one event already contains everything the earlier ones delivered.
-      let final = "";
-      let interim = "";
-      for (let i = 0; i < event.results.length; i++) {
-        const alt = event.results[i][0];
-        const chunk = alt ? alt.transcript : "";
-        if (event.results[i].isFinal) final += `${chunk} `;
-        else interim += `${chunk} `;
-      }
-      sessionRef.current = { final, interim };
-      // Pushed to state on every result, which is what makes the listening bar
-      // update while the mic is still open.
-      setLive(joinHeard(segmentsRef.current, sessionRef.current));
-    };
+
     rec.onerror = (e) => {
       if (e.error === "no-speech" || e.error === "aborted") return;
       // A refused mic is permanent for this session: drop the restart hook
@@ -323,21 +275,69 @@ function VoiceButton({ onTranscript, onError, onStateChange, disabled }) {
         );
       }
     };
-    // Chrome stops recognition on its own after a pause — restart it until the
-    // user taps stop. That is the "no silence timeout" rule. Banking BEFORE
-    // the restart is what keeps the restart from re-counting words: the next
-    // session starts its results over, and on Android it likes to open by
-    // replaying what we just banked.
-    rec.onend = () => {
-      if (!activeRef.current) return;
-      bankSession();
+
+    // Attaches this session's handlers — closed over the session id — and
+    // starts the recognizer. May throw (see restartSession).
+    function startSession() {
+      sessionIdRef.current += 1;
+      const id = sessionIdRef.current;
+
+      rec.onresult = (event) => {
+        // Late event from a session that has already ended, been restarted, or
+        // been killed: dropping it is what stops a final being counted twice.
+        if (id !== sessionIdRef.current || !activeRef.current) return;
+        let finalText = "";
+        let interim = "";
+        // From resultIndex, not 0: only what this event actually delivers.
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const alt = event.results[i][0];
+          const chunk = alt ? alt.transcript : "";
+          if (event.results[i].isFinal) finalText += `${chunk} `;
+          else interim += `${chunk} `;
+        }
+        const settled = collapseSpaces(finalText);
+        if (settled) {
+          // Committed exactly once, then the guess it replaces is dropped.
+          utterancesRef.current.push(settled);
+          interimRef.current = "";
+        } else {
+          interimRef.current = collapseSpaces(interim);
+        }
+        // Pushed to state on every result, which is what makes the listening
+        // bar update while the mic is still open.
+        setLive(joinHeard(utterancesRef.current, interimRef.current));
+      };
+
+      rec.onend = () => {
+        if (id !== sessionIdRef.current || !activeRef.current) return;
+        // The utterance ended at a pause; the toggle is still on, so open the
+        // next one. Nothing to bank or reconcile — the finished session's
+        // final is already committed and its results array is discarded.
+        restartSession();
+      };
+
+      rec.start();
+    }
+
+    // Chrome throws InvalidStateError if start() lands before the previous
+    // session has finished tearing down. One short retry, then give up
+    // quietly: whatever was committed is still delivered when the user stops.
+    function restartSession() {
       try {
-        rec.start();
-      } catch (_) {}
-    };
+        startSession();
+      } catch (_) {
+        setTimeout(() => {
+          if (!activeRef.current || recognitionRef.current !== rec) return;
+          try {
+            startSession();
+          } catch (_) {}
+        }, 150);
+      }
+    }
+
     recognitionRef.current = rec;
     try {
-      rec.start();
+      startSession();
     } catch (_) {
       recognitionRef.current = null;
       return false;
@@ -448,13 +448,21 @@ function VoiceButton({ onTranscript, onError, onStateChange, disabled }) {
 
     // The words are already here — nothing to wait for, so no "Transcribing…".
     if (mode === "speech") {
-      // Banked segments + this session's finals + the trailing interim, with
-      // joinHeard's overlap guard on both seams (the interim is usually a
-      // re-statement of the final tail, and would otherwise say it twice).
-      const text = joinHeard(segmentsRef.current, sessionRef.current);
+      // Committed utterances, plus the interim for the utterance the user was
+      // still in the middle of — its audio is gone, so this is the only chance
+      // to keep those words. The one guard: if that interim is literally the
+      // tail of the last committed utterance (the recognizer had already
+      // promoted it), keeping it would say it twice. Exact match only; no
+      // fuzzy overlap search, because continuous = false leaves nothing else
+      // for one to find.
+      const utterances = utterancesRef.current;
+      const interim = collapseSpaces(interimRef.current);
+      const last = collapseSpaces(utterances[utterances.length - 1] || "");
+      const echoed = !!interim && last.toLowerCase().endsWith(interim.toLowerCase());
+      const text = joinHeard(utterances, echoed ? "" : interim);
       killRecognition();
-      segmentsRef.current = [];
-      sessionRef.current = { final: "", interim: "" };
+      utterancesRef.current = [];
+      interimRef.current = "";
       setState("idle");
       if (text) onTranscript(text);
       if (auto) flashHint(VOICE_AUTO_STOP_HINT);
