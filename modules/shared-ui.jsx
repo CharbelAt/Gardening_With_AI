@@ -239,18 +239,31 @@ function MessageBubble({ msg, onRegenerate, regenerating }) {
 // One banner for however many actions the AI proposed in a reply. Each row
 // can be applied or dismissed on its own; "Apply all" clears the queue.
 function PendingActionsBanner({ actions, onResolve }) {
+  // The queue lives in view state, so leaving the view drops it — clear the
+  // AI-facing copy on the way out too, or Sprout keeps warning about pending
+  // changes the user can no longer see or confirm anywhere.
+  useEffect(() => () => setQueuedActions([]), []);
+
   if (!actions || actions.length === 0) return null;
+
+  // Every way out of the queue goes through resolve(), so the AI's "NOT SAVED
+  // YET" list (setQueuedActions in helpers.jsx) can never outlive the banner
+  // the user just cleared and make it warn about changes that already applied.
+  function resolve(next) {
+    setQueuedActions(next);
+    onResolve(next);
+  }
 
   async function applyOne(index) {
     await applyResolvedAction(actions[index]);
-    onResolve(actions.filter((_, i) => i !== index));
+    resolve(actions.filter((_, i) => i !== index));
   }
   function dismissOne(index) {
-    onResolve(actions.filter((_, i) => i !== index));
+    resolve(actions.filter((_, i) => i !== index));
   }
   async function applyAll() {
     for (const a of actions) await applyResolvedAction(a);
-    onResolve([]);
+    resolve([]);
   }
 
   return (
@@ -270,9 +283,31 @@ function PendingActionsBanner({ actions, onResolve }) {
       {actions.length > 1 && (
         <div className="confirm-actions confirm-all">
           <button className="btn small" onClick={applyAll}>Apply all</button>
-          <button className="btn btn-ghost small" onClick={() => onResolve([])}>Dismiss all</button>
+          <button className="btn btn-ghost small" onClick={() => resolve([])}>Dismiss all</button>
         </div>
       )}
+    </div>
+  );
+}
+
+// "What can Sprout actually see?" — the user-facing half of the context fix.
+// The counts come from a read of the database taken the moment the refresh
+// button was tapped, so they are proof rather than reassurance.
+function ContextPeekModal({ summary, revision, onClose }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Sprout can see</h2>
+        <p className="context-peek">{summary}</p>
+        <p className="hint">
+          Re-read from this device just now (snapshot #{revision}). Sprout gets this same live list
+          with every message you send, so it answers from your actual data — not from what it said
+          earlier.
+        </p>
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Got it</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -416,9 +451,9 @@ function HelpModal({ onClose }) {
           <h3>Getting around</h3>
           <p>The bar at the bottom switches between Chat, Garden, Routines, To-do, Inventory, and Codex. The gear in the header opens Settings.</p>
           <h3>Chat</h3>
-          <p>Type gardening questions to Sprout. The camera button takes a new photo; the pictures button picks one from your gallery — either way it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil". After a reply you'll often see a row of suggested follow-up questions — tap one to ask it straight away.</p>
+          <p>Type gardening questions to Sprout. The camera button takes a new photo; the pictures button picks one from your gallery — either way it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil". After a reply you'll often see a row of suggested follow-up questions — tap one to ask it straight away. Sprout is handed a fresh read of your plants, tools, routines and lists with every single message, so it answers from what's actually saved; the circular-arrows button in the header shows you exactly what it can see right now.</p>
           <h3>Talking instead of typing</h3>
-          <p>Press and HOLD the microphone button in the composer and speak — it listens for as long as you hold it, however long that is, and stops the moment you let go (so it can never hear itself). Your words appear in the strip above the composer as you say them, so you can see it's hearing you; let go and they drop into the text box, added to anything already typed. Nothing is sent until you press Send, so you can fix a word first. If Sprout is reading a reply aloud, holding the mic stops it.</p>
+          <p>Tap the microphone button in the composer and speak — it keeps listening, however long you take, until you tap it again (the button turns into a red stop button while it's on). Your words appear in the strip above the composer as you say them, so you can see it's hearing you; tap stop and they drop into the text box, added to anything already typed. Nothing is sent until you press Send, so you can fix a word first. If Sprout is reading a reply aloud, tapping the mic stops it. If you forget to turn it off it stops itself after 90 seconds and keeps what it heard.</p>
           <h3>Chats</h3>
           <p>The chat-bubbles icon in the header lets you keep separate conversation threads, rename them, or start a new one. New chats name themselves after your first message.</p>
           <h3>Garden</h3>

@@ -11,7 +11,7 @@ const LS_ACTIVE_CHAT = "gc_activeChatId";
 const LS_AI_WRITE_MODE = "gc_aiWriteMode"; // 'auto' | 'confirm'
 const LS_THEME = "gc_theme"; // 'dark' | 'light'
 const LS_DEFAULT_LOCATION = "gc_defaultLocation";
-const CONTEXT_LIMIT = 16; // how many past messages get sent back to the AI as context
+const CONTEXT_LIMIT = 24; // how many past messages get sent back to the AI as context — balance between context loss and free-tier token-per-minute budgets
 
 // Predefined tag sets per module. Users can also type any custom tag, and the
 // AI can both use these and invent new ones (kept short + lowercase).
@@ -56,7 +56,10 @@ const SYSTEM_PROMPT_BASE =
   "change your answer (which plant or variety, indoor vs outdoor, their climate/location, " +
   "what the symptoms actually look like and when they started), ask ONE short clarifying " +
   "question first instead of guessing — and in that reply emit no action lines. " +
-  "When the detail doesn't change the answer, just answer.";
+  "When the detail doesn't change the answer, just answer. " +
+  "NAMES: item names in the user's own garden data always refer to their own items — when a " +
+  "name collides with a famous real-world company/brand/celebrity/place, the user's item wins " +
+  "unless they clearly mean the outside entity.";
 
 // ---------- small formatting helpers ----------
 
@@ -350,14 +353,41 @@ async function syncCodexEntries(maxNew = 3) {
 
 // ---------- AI context ----------
 
+// Bumped after every write (and by the manual refresh button) so anything
+// holding a snapshot can tell that it went stale. The number rides along in
+// the AI snapshot header, which is what makes "is this actually fresh?"
+// checkable instead of just promised.
+let contextRevision = 0;
+
+// Returns the new number so a caller can show it (the refresh modal does).
+function bumpContextRevision() {
+  contextRevision += 1;
+  return contextRevision;
+}
+
+// Confirm mode QUEUES the AI's changes for the user to approve instead of
+// writing them — the data snapshot below is then correct, but the model still
+// believes its change landed and says "saved!". These descriptions go into the
+// snapshot so it can't. Set when actions are queued, re-set (usually to empty)
+// whenever the confirm banner resolves.
+let queuedActionNotes = [];
+
+function setQueuedActions(resolvedActions) {
+  queuedActionNotes = (resolvedActions || []).map(describeAction);
+  bumpContextRevision();
+}
+
 function tagsLabel(item) {
   const tags = item.tags || [];
   return tags.length ? ` [tags: ${tags.join(", ")}]` : "";
 }
 
-// Read-only snapshot of tools/routines/plants, injected into the system
-// prompt so the AI knows the user's current garden state without needing
-// any tool-calling machinery just to read data.
+// Read-only snapshot of the user's data, injected into the system prompt so
+// the AI can answer from what is actually stored without any tool-calling
+// machinery. Rebuilt from IndexedDB on EVERY request (and every continuation
+// round, after the previous round's writes landed) — the heavy framing below
+// exists because a model that is merely SHOWN data still tends to trust what
+// it remembers saying earlier over what the app actually holds.
 async function buildKnowledgeContext() {
   const [tools, routines, plants, shopping, todos] = await Promise.all([
     getAllTools(),
@@ -367,80 +397,291 @@ async function buildKnowledgeContext() {
     getAllTodos(),
   ]);
 
+  // Every section is emitted even when empty, with its count in the heading:
+  // an omitted section reads as "unknown" to a model (so it falls back to
+  // memory), while "Plants (0): none" is a fact it can answer from.
   const parts = [];
 
   const openTodos = todos.filter((t) => !t.done);
-  const doneTodos = todos.length - openTodos.length;
-  if (todos.length) {
+  parts.push(
+    `To-do, one-off tasks (${openTodos.length} open, ${todos.length - openTodos.length} done): ` +
+      (openTodos.length
+        ? openTodos
+            .map((t) => {
+              const delta = todoDueDelta(t.dueDate);
+              const due = t.dueDate ? `, due ${t.dueDate}${delta !== null && delta < 0 ? " OVERDUE" : ""}` : "";
+              return `id:${t.id} "${t.text}"${due}${t.notes ? ` (${t.notes})` : ""}`;
+            })
+            .join(", ")
+        : "none open")
+  );
+
+  parts.push(
+    `To-get, shopping (${shopping.length}): ` +
+      (shopping.length
+        ? shopping
+            .map((s) => `id:${s.id} "${s.name}" x${s.quantity}${s.done ? " [BOUGHT]" : " [open]"}`)
+            .join(", ")
+        : "empty")
+  );
+
+  parts.push(
+    `Tools/supplies (${tools.length}): ` +
+      (tools.length
+        ? tools
+            .map((t) => {
+              const extras = [t.condition, t.location ? `stored: ${t.location}` : "", t.brand]
+                .filter(Boolean)
+                .join(", ");
+              return `id:${t.id} "${t.name}" x${t.quantity}${extras ? ` (${extras})` : ""}${tagsLabel(t)}`;
+            })
+            .join(", ")
+        : "none")
+  );
+
+  parts.push(
+    `Routines (${routines.length}): ` +
+      (routines.length
+        ? routines
+            .map((r) => {
+              const status = isRoutineDue(r) ? "DUE" : "not due";
+              const last = r.lastDone ? new Date(r.lastDone).toLocaleDateString() : "never";
+              const link = r.plantId ? `, linked to plant id:${r.plantId}${r.careAction ? ` (${r.careAction})` : ""}` : "";
+              return `id:${r.id} "${r.task}" (every ${r.intervalDays}d, last done ${last}, ${status}${link})${tagsLabel(r)}`;
+            })
+            .join("; ")
+        : "none")
+  );
+
+  parts.push(
+    `Plants (${plants.length}):` +
+      (plants.length
+        ? "\n" +
+          plants
+            .map((p) => {
+              const w = p.lastWatered ? new Date(p.lastWatered).toLocaleDateString() : "never";
+              const f = p.lastFertilized ? new Date(p.lastFertilized).toLocaleDateString() : "never";
+              return `- id:${p.id} "${p.name}" | location: ${p.location || "unknown"} | planted: ${
+                p.plantingDate || "unknown"
+              } | last watered: ${w} | last fertilized: ${f}${tagsLabel(p)} | notes: ${p.notes || "none"}`;
+            })
+            .join("\n")
+        : " none")
+  );
+
+  // Confirm mode: proposed changes are sitting in the banner, unwritten.
+  if (queuedActionNotes.length) {
     parts.push(
-      "To-do list (one-off tasks): " +
-        (openTodos.length
-          ? openTodos
-              .map((t) => {
-                const delta = todoDueDelta(t.dueDate);
-                const due = t.dueDate ? `, due ${t.dueDate}${delta !== null && delta < 0 ? " OVERDUE" : ""}` : "";
-                return `id:${t.id} "${t.text}"${due}${t.notes ? ` (${t.notes})` : ""}`;
-              })
-              .join(", ")
-          : "nothing open") +
-        ` — plus ${doneTodos} already completed`
+      `NOT SAVED YET (${queuedActionNotes.length}) — you proposed these and the user has not ` +
+        "confirmed them, so they are NOT in the data above and have NOT happened: " +
+        queuedActionNotes.join("; ") +
+        ". Never call them saved; say they are waiting for confirmation."
     );
   }
 
-  if (shopping.length) {
-    parts.push(
-      "To-get list (shopping): " +
-        shopping
-          .map((s) => `id:${s.id} "${s.name}" x${s.quantity}${s.done ? " [BOUGHT]" : " [open]"}`)
-          .join(", ")
-    );
-  }
+  return (
+    `\n\n=== LIVE GARDEN DATA — read from the app's database just now, ${deviceNow()} (snapshot #${contextRevision}) ===\n` +
+    "AUTHORITATIVE: this block is the single source of truth and OVERRIDES everything said earlier " +
+    "in this conversation, including your own earlier statements. If something is not listed here, " +
+    "it does not exist (deleted, or never added — do not resurrect it); where a value differs from " +
+    'what was said earlier, this block wins. Answer "what do I have" / "is X on my list" strictly ' +
+    "from it, never from memory.\n" +
+    parts.join("\n") +
+    "\n=== END LIVE GARDEN DATA ==="
+  );
+}
 
-  if (tools.length) {
-    parts.push(
-      "Tools/supplies: " +
-        tools
-          .map((t) => {
-            const extras = [t.condition, t.location ? `stored: ${t.location}` : "", t.brand]
-              .filter(Boolean)
-              .join(", ");
-            return `id:${t.id} "${t.name}" x${t.quantity}${extras ? ` (${extras})` : ""}${tagsLabel(t)}`;
-          })
-          .join(", ")
-    );
-  }
+// ---------- entity disambiguation ----------
+//
+// The user names garden items after real-world brands/words ("Lenovo" the
+// fungicide) — a model asked "how much lenovo do I have?" tends to answer
+// about the laptop company because that prior is much stronger than a fact
+// buried in a data dump it was merely shown. buildEntityHints scans the
+// user's latest message for words that match something the user actually
+// owns and returns a short, loud block telling the model to resolve to THAT
+// item — see buildContextMessages/buildChatVisionPrompt for where it lands.
 
-  if (routines.length) {
-    parts.push(
-      "Routines: " +
-        routines
-          .map((r) => {
-            const status = isRoutineDue(r) ? "DUE" : "not due";
-            const last = r.lastDone ? new Date(r.lastDone).toLocaleDateString() : "never";
-            const link = r.plantId ? `, linked to plant id:${r.plantId}${r.careAction ? ` (${r.careAction})` : ""}` : "";
-            return `id:${r.id} "${r.task}" (every ${r.intervalDays}d, last done ${last}, ${status}${link})${tagsLabel(r)}`;
-          })
-          .join("; ")
-    );
-  }
+// Generic gardening words that would fire on nearly every message if matched
+// as a whole item name ("Buy soil" turning every "soil" into a hint would be
+// noise, not signal) — but they're fine as PART of a longer, more specific
+// name ("tomato fertilizer" still matches). False positives here cost more
+// than the rare miss, so keep this list small and only skip WHOLE-name hits.
+const ENTITY_HINT_STOPWORDS = new Set([
+  "water", "soil", "seeds", "seed", "plant", "plants", "garden",
+  "tool", "tools", "pot", "food", "spray", "fertilizer", "compost", "mulch",
+]);
 
-  if (plants.length) {
-    parts.push(
-      "Plants:\n" +
-        plants
-          .map((p) => {
-            const w = p.lastWatered ? new Date(p.lastWatered).toLocaleDateString() : "never";
-            const f = p.lastFertilized ? new Date(p.lastFertilized).toLocaleDateString() : "never";
-            return `- id:${p.id} "${p.name}" | location: ${p.location || "unknown"} | planted: ${
-              p.plantingDate || "unknown"
-            } | last watered: ${w} | last fertilized: ${f}${tagsLabel(p)} | notes: ${p.notes || "none"}`;
-          })
-          .join("\n")
-    );
-  }
+// True only on a real word boundary, with an optional trailing "s" so simple
+// plurals ("mints", "roses") still match a singular item name without a full
+// stemmer. Lookaround (not \b) because item names can contain spaces/symbols
+// ("Tomato #1", "neem oil") where \b's word-char definition would misfire
+// mid-phrase. The caller is responsible for escaping `phrase`.
+function entityHintMatches(haystack, escapedPhrase) {
+  const re = new RegExp(`(?<![a-z0-9])${escapedPhrase}s?(?![a-z0-9])`, "i");
+  return re.test(haystack);
+}
 
-  if (!parts.length) return "\n\nThe user's garden data (plants, tools, routines) is currently empty.";
-  return "\n\nCurrent garden data (for your reference):\n" + parts.join("\n");
+// Records that `word` matched `entry`, deduping so the SAME item pushed twice
+// (e.g. via both its full name and its first word) only appears once, while
+// two DIFFERENT items matching the same word both stay — that's the ambiguous
+// case buildEntityHints has to flag.
+function pushEntityHit(hits, word, entry) {
+  const list = hits.get(word) || [];
+  if (!list.some((e) => e.kind === entry.kind && e.id === entry.id)) list.push(entry);
+  hits.set(word, list);
+}
+
+// Scans `text` (the user's latest message, or a photo caption) for names that
+// exist in THIS user's own data and returns a compact system-prompt block, or
+// "" when nothing matches — a deliberate no-op (zero extra tokens) that keeps
+// this feature free for every message that doesn't need it. Wrapped in
+// try/catch: a weirdly-named item (regex metacharacters) must never be able
+// to break chat.
+async function buildEntityHints(text) {
+  const msg = (text || "").toLowerCase();
+  if (!msg.trim()) return "";
+  try {
+    // One batch, one read each — mirrors buildKnowledgeContext's Promise.all
+    // so this never doubles the IndexedDB traffic of an ordinary turn.
+    const [plants, tools, routines, todos, shopping, codex] = await Promise.all([
+      getAllPlants(),
+      getAllTools(),
+      getAllRoutines(),
+      getAllTodos(),
+      getAllShoppingItems(),
+      getAllCodexEntries(),
+    ]);
+
+    // Flatten every source into one shape, carrying the disambiguating detail
+    // (quantity/tags, location, due date, interval) the model would otherwise
+    // have to re-derive from the full snapshot.
+    const candidates = [];
+    for (const p of plants) {
+      candidates.push({
+        kind: "plant", id: p.id, name: p.name, label: "PLANT",
+        detail: p.location ? `location: ${p.location}` : "",
+      });
+    }
+    for (const t of tools) {
+      const tags = (t.tags || []).join("/");
+      candidates.push({
+        kind: "tool", id: t.id, name: t.name, label: "INVENTORY item",
+        detail: `x${t.quantity ?? 1}${tags ? `, ${tags}` : ""}`,
+      });
+    }
+    for (const r of routines) {
+      candidates.push({
+        kind: "routine", id: r.id, name: r.task, label: "ROUTINE",
+        detail: `every ${r.intervalDays}d`,
+      });
+    }
+    for (const td of todos) {
+      if (td.done) continue; // a finished to-do isn't a live thing to disambiguate to
+      candidates.push({
+        kind: "todo", id: td.id, name: td.text, label: "TO-DO",
+        detail: td.dueDate ? `due ${td.dueDate}` : "",
+      });
+    }
+    for (const s of shopping) {
+      candidates.push({
+        kind: "toget", id: s.id, name: s.name, label: "TO-GET item",
+        detail: s.done ? "already bought" : `x${s.quantity ?? 1}, on shopping list`,
+      });
+    }
+    for (const c of codex) {
+      const nm = c.itemName || c.title;
+      if (!nm) continue;
+      candidates.push({ kind: "codex", id: c.id, name: nm, label: "saved CODEX entry", detail: "" });
+    }
+
+    // hits: matched surface word -> [{candidate}] — keying by the matched WORD
+    // (not the item) is what turns "two items share this word" into one
+    // ambiguous line instead of two separate confident-sounding hints.
+    const hits = new Map();
+    for (const c of candidates) {
+      const clean = (c.name || "").trim().replace(/^["'.,!?;:]+|["'.,!?;:]+$/g, "");
+      if (!clean) continue;
+      const lower = clean.toLowerCase().replace(/\s+/g, " ");
+      if (lower.length < 3) continue; // too short to be a meaningful signal
+      const words = lower.split(" ");
+      const wholeIsStopword = words.length === 1 && ENTITY_HINT_STOPWORDS.has(lower);
+      const entry = { ...c, name: clean };
+
+      if (!wholeIsStopword) {
+        const escaped = lower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (entityHintMatches(msg, escaped)) pushEntityHit(hits, lower, entry);
+      }
+      // Multi-word names also match on their first significant word, so a
+      // tool literally named "Lenovo 500SC" is still found when the user just
+      // says "lenovo" — gated to ≥4 chars / non-stopword so short leading
+      // words ("the", "buy") can't turn into noisy matches.
+      if (words.length > 1) {
+        const first = words[0];
+        if (first.length >= 4 && !ENTITY_HINT_STOPWORDS.has(first)) {
+          const escapedFirst = first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          if (entityHintMatches(msg, escapedFirst)) pushEntityHit(hits, first, entry);
+        }
+      }
+    }
+    if (hits.size === 0) return "";
+
+    // Longest matched word first = most specific / least likely coincidental;
+    // cap at 6 so this can never balloon into a token sink on a busy garden.
+    const words = [...hits.keys()].sort((a, b) => b.length - a.length).slice(0, 6);
+
+    const lines = words.map((word) => {
+      const entries = hits.get(word);
+      const phrases = entries.map((e) => {
+        const detail = e.detail ? ` (${e.detail})` : "";
+        return `their ${e.label} id:${e.id} "${e.name}"${detail}`;
+      });
+      const ambiguous = phrases.length > 1;
+      return (
+        `- "${word}" → ${phrases.join(" OR ")}` +
+        (ambiguous ? " — ask which one is meant if your answer would differ" : "")
+      );
+    });
+
+    return (
+      "\n\n=== NAME MATCHES IN THE USER'S MESSAGE ===\n" +
+      "The user's latest message mentions names that exist in THEIR garden data. In this app " +
+      "those words mean the user's own item below — NOT a real-world company, brand, celebrity, " +
+      "or place that happens to share the name. For a product-type item, general knowledge ABOUT " +
+      "THE PRODUCT ITSELF (active ingredient, dosage, safety) is still exactly what to give — this " +
+      "rule only stops you from confusing the item's IDENTITY with an unrelated same-named entity.\n" +
+      lines.join("\n") +
+      "\nException: if the user is clearly asking about the outside entity itself (its stock price, " +
+      "its CEO, who makes it as a company) rather than their item, you may briefly answer that instead.\n" +
+      "=== END NAME MATCHES ==="
+    );
+  } catch (e) {
+    console.error("buildEntityHints failed:", e && e.message);
+    return "";
+  }
+}
+
+// The same snapshot, one line, for the USER — so "what can Sprout actually see
+// right now?" is answerable in the UI (the refresh button in the chat header)
+// and not just inside the prompt.
+async function buildContextSummary() {
+  const [tools, routines, plants, shopping, todos] = await Promise.all([
+    getAllTools(),
+    getAllRoutines(),
+    getAllPlants(),
+    getAllShoppingItems(),
+    getAllTodos(),
+  ]);
+  const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+  const summary = [
+    n(plants.length, "plant", "plants"),
+    n(tools.length, "item", "items"),
+    n(routines.length, "routine", "routines"),
+    n(todos.filter((t) => !t.done).length, "to-do", "to-dos"),
+    n(shopping.filter((s) => !s.done).length, "to-get", "to-get"),
+  ].join(" · ");
+  return queuedActionNotes.length
+    ? `${summary} — plus ${queuedActionNotes.length} change(s) waiting for your confirmation`
+    : summary;
 }
 
 // The write-back conventions are ALWAYS included (previously they were only
@@ -521,10 +762,16 @@ const ACTION_CONVENTIONS =
   "earlier in the conversation. BUT when the user explicitly asks you to create demo/sample/" +
   "example data, that IS a real request — emit one action line per item you create.\n" +
   "- FOLLOW-UP SUGGESTIONS (optional): after any action lines and BEFORE the STATUS line, you " +
-  'may emit exactly ONE line: FOLLOWUP: ["short question 1", "short question 2", "short ' +
-  'question 3"] — 2-3 SHORT questions the USER might want to ask you next, written in the ' +
-  'user\'s voice ("How often should I water it?"), never in yours. The app turns them into ' +
-  "tap-to-ask chips and never shows the line itself. Skip it for trivial confirmations.\n" +
+  'may emit exactly ONE line: FOLLOWUP: ["item 1", "item 2", "item 3"] — 2-3 short items the ' +
+  "USER might send you next, questions OR commands/requests. Each string is inserted verbatim " +
+  "into the user's input box and sent AS THE USER when tapped, so it must be something THEY " +
+  'would type to YOU: first person ("I"/"my"), addressing you as "you". WRONG (your voice, an ' +
+  'offer): "Would you like me to add a watering routine?" / "Shall I check the soil pH?" / "Do ' +
+  'you want more details?" RIGHT (their voice): "How often should I water it?" / "Add a ' +
+  'watering routine for this" / "What pests should I watch for?" / "Remind me to spray next ' +
+  'week". Rule of thumb: never start with "Would you like", "Shall I", "Do you want", "Should ' +
+  'I", or "Let me know if" — start with a word the USER would say. Skip it for trivial ' +
+  "confirmations.\n" +
   "- COMPLETION FLAG (mandatory): the VERY LAST line of EVERY reply must be exactly " +
   "STATUS: done — or STATUS: continue if you could not finish everything in this reply " +
   "(too many items, ran out of space). On STATUS: continue the app immediately asks you to " +
@@ -535,7 +782,8 @@ const ACTION_CONVENTIONS =
 // end of the context most, and this is what finally made "add X" reliably act
 // in the SAME reply instead of a later one.
 const ACTION_REMINDER =
-  "REMINDER — check before you answer: does the user's latest message ask to add, update, " +
+  "REMINDER: before answering, re-check the live data snapshot above rather than relying on " +
+  "conversation memory. Also check — does the user's latest message ask to add, update, " +
   "remove, log, note, or track anything (plant, tool, routine, to-do task, to-get/shopping item, " +
   "watering, purchase), to create demo/sample data (allowed — one action line per item), or to attach a " +
   "photo they sent to a plant (ATTACH_PHOTO) or set a cover (SET_COVER — you CAN do these)? " +
@@ -543,8 +791,9 @@ const ACTION_REMINDER =
   "instructions — act now, in this reply, never later. If unsure which item they mean, ask " +
   "instead and emit nothing. If a change was already applied earlier in the conversation, " +
   "don't re-emit it. Never claim a change without its action line in this same reply. " +
-  'Optionally, one line before the end: FOLLOWUP: ["…", "…"] with 2-3 short questions the ' +
-  "USER might ask next, in their voice. " +
+  'Optionally, one line before the end: FOLLOWUP: ["…", "…"] — 2-3 items in the USER\'s voice, ' +
+  "questions or commands they'd send you, never offers like \"Would you like me to…\" (see the " +
+  "FOLLOWUP rule above). " +
   "Finally: your very last line must be STATUS: done, or STATUS: continue if work remains.";
 
 // Injected on automatic continuation rounds (previous reply flagged
@@ -578,13 +827,24 @@ function detectChatMode(text) {
 // still happens server-side via the mode sent to /api/chat.
 async function buildContextMessages(history, mode) {
   const recent = history.slice(-CONTEXT_LIMIT);
+  // Awaited HERE, not by the caller: the snapshot must be read after the
+  // previous continuation round's writes and immediately before this request.
+  // The device date lives in its header now, so it isn't repeated here.
   const knowledge = await buildKnowledgeContext();
-  const sys =
-    SYSTEM_PROMPT_BASE +
-    ` The user's device says it is now: ${deviceNow()}.` +
-    knowledge +
-    ACTION_CONVENTIONS;
+  const sys = SYSTEM_PROMPT_BASE + knowledge + ACTION_CONVENTIONS;
   const msgs = [{ role: "system", content: sys }];
+  // Truncation is announced rather than silent — otherwise the model answers
+  // confidently about turns it can no longer see.
+  const omitted = history.length - recent.length;
+  if (omitted > 0) {
+    msgs.push({
+      role: "system",
+      content:
+        `[Note: ${omitted} earlier message(s) in this conversation are NOT shown to you. The live ` +
+        "garden data block above is current and already reflects them; for anything else from " +
+        "those messages, ask the user rather than guessing about what you can't see.]",
+    });
+  }
   for (const m of recent) {
     if (m.kind === "image") {
       // The #id lets the model reference a specific photo in ATTACH_PHOTO.
@@ -599,6 +859,17 @@ async function buildContextMessages(history, mode) {
       msgs.push({ role: m.role, content: m.text || "" });
     }
   }
+  // Entity-disambiguation hints for the CURRENT turn — read from the full
+  // `history`, not the possibly-truncated `recent` slice, since the latest
+  // message is always in `recent` anyway (CONTEXT_LIMIT is never 0) and this
+  // is cheap either way. Pushed immediately before ACTION_REMINDER (the last
+  // message) rather than up near the snapshot: models weight the END of the
+  // context most, and a same-named real-world entity is exactly the kind of
+  // strong prior that needs a nudge right before the model answers, not one
+  // buried under 24 messages of history.
+  const lastUser = [...history].reverse().find((m) => m.role === "user");
+  const entityHints = lastUser ? await buildEntityHints(lastUser.text || "") : "";
+  if (entityHints) msgs.push({ role: "system", content: entityHints });
   msgs.push({ role: "system", content: ACTION_REMINDER });
   return msgs;
 }
@@ -607,18 +878,28 @@ async function buildContextMessages(history, mode) {
 // own, pinned to a specific plant id). Gives the vision model the same garden
 // awareness + write-back powers as the chat model.
 async function buildChatVisionPrompt(caption) {
+  // Lighter than buildKnowledgeContext (a photo only ever needs the plant
+  // list), but the SAME authority framing — the two must never contradict.
   const plants = await getAllPlants();
-  const plantList = plants.length
-    ? "The user's plants: " +
-      plants.map((p) => `id:${p.id} "${p.name}" (${p.location || "unknown location"})`).join(", ") +
-      ". "
-    : "The user has no plants saved yet. ";
+  const plantList =
+    `AUTHORITATIVE plant list, read from the app's database just now (${plants.length}) — it ` +
+    "overrides anything said earlier, and a plant not on it does not exist: " +
+    (plants.length
+      ? plants.map((p) => `id:${p.id} "${p.name}" (${p.location || "unknown location"})`).join(", ")
+      : "none saved yet") +
+    ". ";
+  // Same name-collision problem as the chat path (e.g. a caption mentioning
+  // "lenovo"), just lighter-weight since a photo caption is usually short —
+  // buildEntityHints itself already keeps this a no-op when nothing matches.
+  const entityHints = await buildEntityHints(caption || "");
   return (
     "You are Sprout, a friendly gardening companion analyzing a photo for a home gardener. " +
     `The user's device says it is now: ${deviceNow()}. ` +
     plantList +
     "Identify the plant, assess its health from the photo, and give concrete care advice. " +
     `The user's question about this photo: "${caption}". ` +
+    entityHints +
+    (entityHints ? " " : "") +
     "You may end your reply with hidden action lines (JSON on a single line, never mentioned " +
     "in your visible reply):\n" +
     'UPDATE_PLANT: {"id": <plant id>, "fields": {"notes": "..."}} — if this photo warrants a record update.\n' +
@@ -626,8 +907,9 @@ async function buildChatVisionPrompt(caption) {
     'ATTACH_PHOTO: {"plantId": <plant id>} — saves THIS photo into that plant\'s gallery; use it ' +
     "whenever the user asks to add/attach/save this picture to a plant (you CAN do this — never " +
     "say the photo wasn't uploaded or that you need a URL).\n" +
-    'FOLLOWUP: ["short question 1", "short question 2"] — optional, exactly one line, AFTER any ' +
-    "action lines: 2-3 short questions the USER might want to ask next, in the user's voice.\n" +
+    'FOLLOWUP: ["item 1", "item 2"] — optional, exactly one line, AFTER any action lines: 2-3 ' +
+    "short items in the USER's voice — questions or commands they'd send you, never an offer " +
+    'like "Would you like me to…" (see the FOLLOWUP rule).\n' +
     "Emit none of them when not genuinely warranted."
   );
 }
@@ -689,6 +971,15 @@ function extractStatus(text) {
 // array is dropped silently rather than shown (or read aloud).
 const FOLLOWUP_LINE_RE = /(?:^|\n)[ \t>*`-]*FOLLOWUP\**[ \t]*:[ \t*`]*(\[[^\n]*\])[ \t`*]*(?=\n|$)/gi;
 
+// Prompt rules leak — models still occasionally emit an offer in THEIR voice
+// ("Would you like me to add a routine?") instead of the user's. A tapped
+// chip is inserted verbatim into the input box and sent AS THE USER, so an
+// AI-voice offer becomes nonsense when it round-trips ("would you like me
+// to..." supposedly said BY the user TO the assistant). Reject those here as
+// a backstop, case-insensitively, by leading phrase.
+const FOLLOWUP_AI_VOICE_RE =
+  /^(would you like|would you want|shall i|should i|do you want|do you need|can i |may i |let me know|want me to|would you prefer|is there anything)/i;
+
 function extractFollowups(text) {
   let followups = [];
   const cleanText = (text || "")
@@ -699,6 +990,9 @@ function extractFollowups(text) {
           followups = parsed
             .map((q) => String(q == null ? "" : q).replace(/\s+/g, " ").trim().slice(0, 80))
             .filter(Boolean)
+            // Drop AI-voice offers that leaked past the prompt rules — if
+            // every item gets rejected this simply yields [] (no chips).
+            .filter((q) => !FOLLOWUP_AI_VOICE_RE.test(q))
             .slice(0, 3);
         }
       } catch (_) {
@@ -1175,7 +1469,17 @@ function describeAction(a) {
   }
 }
 
+// Every AI-driven write funnels through here — chat, the confirm banner, and
+// the inventory/garden views alike — so this is the one place that can
+// guarantee the context revision moves after a write. Keep the wrapper thin;
+// runResolvedAction stays the pure dispatcher.
 async function applyResolvedAction(a) {
+  const out = await runResolvedAction(a);
+  bumpContextRevision();
+  return out;
+}
+
+async function runResolvedAction(a) {
   switch (a.type) {
     case "add_plant":
       return applyPlantAdd(a.fields);
@@ -1233,7 +1537,14 @@ async function handleAiActions(actions, setPendingActions, ctx = {}) {
   if (!resolved.length) return result;
   if (confirmMode) {
     if (setPendingActions) {
-      setPendingActions((prev) => [...(prev || []), ...resolved]);
+      setPendingActions((prev) => {
+        // Mirrored into queuedActionNotes inside the updater so the AI's
+        // "NOT SAVED YET" list always matches the banner the user is looking
+        // at — nothing here is written to the database yet.
+        const next = [...(prev || []), ...resolved];
+        setQueuedActions(next);
+        return next;
+      });
       result.queued = resolved.length;
     }
     return result;

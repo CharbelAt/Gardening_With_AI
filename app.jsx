@@ -4,9 +4,10 @@
 // editing files and committing to GitHub Pages (no build step).
 //
 // Navigation model: a persistent bottom bar switches the main view
-// (chat/garden/routines/todos/inventory/codex). Voice input is hold-to-talk
-// dictation in the chat composer (VoiceHoldButton in voice.jsx) — there is no
-// separate call view or call mode. Cross-module links (e.g. a plant's "Ask
+// (chat/garden/routines/todos/inventory/codex). Voice input is a tap-to-talk
+// toggle in the chat composer (VoiceButton in voice.jsx: tap to open the mic,
+// tap again to close it and append the transcript) — there is no separate
+// call view or call mode. Cross-module links (e.g. a plant's "Ask
 // Sprout" button, a routine's linked plant, an item's Codex button) go through
 // navigate(view, {itemId, draft, query}).
 
@@ -27,6 +28,7 @@ function App() {
   const [theme, setTheme] = useState(getTheme());
   const [renameTarget, setRenameTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [contextPeek, setContextPeek] = useState(null); // { summary, revision } from the refresh button
 
   useEffect(() => {
     localStorage.setItem(LS_THEME, theme);
@@ -52,6 +54,17 @@ function App() {
   useEffect(() => {
     refreshDueCount();
   }, [view]);
+
+  // "Refresh context" (chat header): re-reads IndexedDB, bumps the context
+  // revision, and shows the user the counts the AI will be given. The prompt
+  // snapshot is rebuilt per request anyway — this exists so the user can VERIFY
+  // what Sprout can see instead of taking its word for it.
+  async function refreshAiContext() {
+    const revision = bumpContextRevision();
+    const summary = await buildContextSummary();
+    await refreshDueCount(); // same underlying read, so the nav badges can't disagree
+    setContextPeek({ summary, revision });
+  }
 
   function navigate(nextView, opts = {}) {
     setNavItemId(opts.itemId != null ? opts.itemId : null);
@@ -156,6 +169,11 @@ function App() {
               <i className="bi bi-chat-square-text"></i>
             </button>
           )}
+          {view === "chat" && (
+            <button className="icon-btn" onClick={refreshAiContext} title="Refresh what Sprout can see">
+              <i className="bi bi-arrow-repeat"></i>
+            </button>
+          )}
         </div>
         <span className="app-title">
           <i className="bi bi-flower1"></i>
@@ -212,6 +230,14 @@ function App() {
       )}
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+
+      {contextPeek && (
+        <ContextPeekModal
+          summary={contextPeek.summary}
+          revision={contextPeek.revision}
+          onClose={() => setContextPeek(null)}
+        />
+      )}
 
       {showSettings && (
         <SettingsModal

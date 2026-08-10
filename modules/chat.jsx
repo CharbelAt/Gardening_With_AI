@@ -1,8 +1,8 @@
 // The Chat page: typed messages, photos (camera or gallery), AI action
 // confirmations (multi-action aware), per-message regenerate/copy/read-aloud,
-// tap-to-ask follow-up chips under the newest reply, and hold-to-talk
-// dictation (VoiceHoldButton in voice.jsx — the mic only records while held,
-// and the transcript lands in the input instead of being sent).
+// tap-to-ask follow-up chips under the newest reply, and tap-to-talk
+// dictation (VoiceButton in voice.jsx — tap to open the mic, tap again to
+// close it, and the transcript lands in the input instead of being sent).
 
 // The follow-up questions the model proposed on its last reply (FOLLOWUP line,
 // parsed by extractFollowups). Tapping one asks it immediately.
@@ -69,7 +69,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
   }
 
   // Dictation result: appended to whatever is already typed (never sent for
-  // the user), so a hold can extend a half-typed message.
+  // the user), so dictation can extend a half-typed message.
   function appendTranscript(text) {
     const clean = (text || "").trim();
     if (!clean) return;
@@ -97,6 +97,9 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
       // STATUS: done — capped at 3 rounds so it can never spin forever.
       let history = nextHistory;
       for (let round = 0; round < 3; round++) {
+        // Rebuilt INSIDE the loop on purpose: the garden-data snapshot must be
+        // read after the previous round's handleAiActions writes were awaited,
+        // or round 2+ reasons about pre-action data. Never hoist this out.
         const msgs = await buildContextMessages(history, "chat");
         if (round > 0) msgs.push({ role: "system", content: CONTINUE_NUDGE });
         const data = await apiFetch("/api/chat", {
@@ -329,7 +332,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           onKeyDown={(e) => e.key === "Enter" && sendText()}
           disabled={busy}
         />
-        <VoiceHoldButton
+        <VoiceButton
           onTranscript={appendTranscript}
           onError={setError}
           onStateChange={setVoice}
