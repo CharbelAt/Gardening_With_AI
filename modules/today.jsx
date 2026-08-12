@@ -162,9 +162,9 @@ function TodayView({ onNavigate }) {
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <h2><i className="bi bi-sunrise"></i> Today</h2>
-        <button className="icon-btn" onClick={refresh} title="Refresh">
-          <i className="bi bi-arrow-clockwise"></i>
+        <h2><i className="bi bi-sunrise" aria-hidden="true"></i> Today</h2>
+        <button className="icon-btn" onClick={refresh} title="Refresh" aria-label="Refresh">
+          <i className="bi bi-arrow-clockwise" aria-hidden="true"></i>
         </button>
       </div>
 
@@ -179,23 +179,23 @@ function TodayView({ onNavigate }) {
 
         {nothingToDo && (
           <div className="empty-state">
-            <i className="bi bi-emoji-smile"></i>
+            <i className="bi bi-emoji-smile" aria-hidden="true"></i>
             <p>Nothing needs you today — no routines due, no to-dos, every plant recently watered.</p>
             <span className="empty-sub">Good day to just look at it all.</span>
           </div>
         )}
 
         {attentionCount > 0 && (
-          <section className="today-section">
+          <section className="today-section" role="list">
             <h3 className="today-section-title">
-              <i className="bi bi-exclamation-circle"></i> Needs attention
+              <i className="bi bi-exclamation-circle" aria-hidden="true"></i> Needs attention
               <span className="today-count">{attentionCount}</span>
             </h3>
 
             {dueRoutines.map((r) => (
-              <div key={`r${r.id}`} className="today-row">
+              <div key={`r${r.id}`} role="listitem" className="today-row">
                 <button className="today-row-main" onClick={() => onNavigate("routines", { itemId: r.id })}>
-                  <i className="bi bi-arrow-repeat"></i>
+                  <i className="bi bi-arrow-repeat" aria-hidden="true"></i>
                   <span className="today-row-text">
                     <span className="today-row-title">{r.task || "Untitled routine"}</span>
                     <span className="today-row-sub">
@@ -206,23 +206,24 @@ function TodayView({ onNavigate }) {
                 <button
                   className="today-do"
                   title="Mark done"
+                  aria-label="Mark done"
                   disabled={busyKey === `r${r.id}`}
                   onClick={() => doRoutine(r)}
                 >
-                  <i className="bi bi-check2-circle"></i>
+                  <i className="bi bi-check2-circle" aria-hidden="true"></i>
                 </button>
               </div>
             ))}
 
             {urgentTodos.map((t) => (
-              <div key={`t${t.id}`} className="today-row">
+              <div key={`t${t.id}`} role="listitem" className="today-row">
                 <button className="today-row-main" onClick={() => onNavigate("todos")}>
-                  <i className="bi bi-check2-square"></i>
+                  <i className="bi bi-check2-square" aria-hidden="true"></i>
                   <span className="today-row-text">
                     <span className="today-row-title">{t.text}</span>
                     <span className="today-row-sub">
                       <span className="todo-due overdue">
-                        <i className="bi bi-calendar-event"></i> {todoDueLabel(t.dueDate)}
+                        <i className="bi bi-calendar-event" aria-hidden="true"></i> {todoDueLabel(t.dueDate)}
                       </span>
                     </span>
                   </span>
@@ -230,10 +231,11 @@ function TodayView({ onNavigate }) {
                 <button
                   className="today-do"
                   title="Check off"
+                  aria-label="Check off"
                   disabled={busyKey === `t${t.id}`}
                   onClick={() => doTodo(t)}
                 >
-                  <i className="bi bi-check2-square"></i>
+                  <i className="bi bi-check2-square" aria-hidden="true"></i>
                 </button>
               </div>
             ))}
@@ -241,18 +243,18 @@ function TodayView({ onNavigate }) {
         )}
 
         {thirsty.length > 0 && (
-          <section className="today-section">
+          <section className="today-section" role="list">
             <h3 className="today-section-title">
-              <i className="bi bi-droplet"></i> Thirsty plants
+              <i className="bi bi-droplet" aria-hidden="true"></i> Thirsty plants
               <span className="today-count">{thirsty.length}</span>
             </h3>
             {thirsty.map(({ plant, interval, days }) => (
-              <div key={`p${plant.id}`} className="today-row">
+              <div key={`p${plant.id}`} role="listitem" className="today-row">
                 <button className="today-row-main" onClick={() => onNavigate("garden", { itemId: plant.id })}>
                   {plant.coverThumb ? (
                     <img className="today-thumb" src={plant.coverThumb} alt={plant.name} />
                   ) : (
-                    <i className="bi bi-flower3"></i>
+                    <i className="bi bi-flower3" aria-hidden="true"></i>
                   )}
                   <span className="today-row-text">
                     <span className="today-row-title">{plant.name || `Plant #${plant.id}`}</span>
@@ -265,10 +267,11 @@ function TodayView({ onNavigate }) {
                 <button
                   className="today-do"
                   title="Mark watered"
+                  aria-label="Mark watered"
                   disabled={busyKey === `p${plant.id}`}
                   onClick={() => doWater(plant)}
                 >
-                  <i className="bi bi-droplet-fill"></i>
+                  <i className="bi bi-droplet-fill" aria-hidden="true"></i>
                 </button>
               </div>
             ))}
@@ -280,18 +283,18 @@ function TodayView({ onNavigate }) {
             className="btn btn-ghost"
             onClick={() => onNavigate("chat", { draft: "What should I prioritize in the garden today?" })}
           >
-            <i className="bi bi-chat-dots"></i> Ask Sprout about today
+            <i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout about today
           </button>
           <button className="btn btn-ghost" onClick={summarizeDay} disabled={summarizing}>
-            <i className={summarizing ? "bi bi-hourglass-split" : "bi bi-stars"}></i>{" "}
+            <i className={summarizing ? "bi bi-hourglass-split" : "bi bi-stars"} aria-hidden="true"></i>{" "}
             {summarizing ? "Thinking…" : "Summarize my day"}
           </button>
         </div>
 
-        {summaryError && <div className="error-banner">{summaryError}</div>}
+        {summaryError && <div className="error-banner" role="alert">{summaryError}</div>}
         {summary && (
-          <div className="today-summary">
-            <h3 className="today-section-title"><i className="bi bi-stars"></i> Sprout's plan</h3>
+          <div className="today-summary" role="status" aria-live="polite">
+            <h3 className="today-section-title"><i className="bi bi-stars" aria-hidden="true"></i> Sprout's plan</h3>
             <div dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(summary) }} />
           </div>
         )}

@@ -59,6 +59,9 @@
   --sp-4: 16px;
   --sp-5: 20px;
   --sp-6: 24px;
+  /* Only used to separate whole blocks (an empty state from the bar above it);
+     nothing inside a card ever needs this much. */
+  --sp-8: 32px;
   --gutter: 16px;
 
   /* type ramp (Dynamic-Type shaped). Body is 16px and nothing that has to
@@ -108,9 +111,14 @@
   --dur-slow: 260ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1); /* spring-ish settle */
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
-  /* Every pressed state scales by this. Set to 1 under reduced motion, which
-     is what disables all of them at once instead of one rule at a time. */
+  /* Every pressed state scales by one of these. Set to 1 under reduced motion,
+     which is what disables all of them at once instead of one rule at a time —
+     so a press state must never hard-code its own scale() value.
+     subtle = a whole card or row (any more looks like it came loose),
+     base   = a button, strong = a small disc that needs the travel to read. */
   --press-scale: 0.97;
+  --press-scale-subtle: 0.99;
+  --press-scale-strong: 0.93;
 
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
@@ -201,6 +209,15 @@ input, textarea, select {
 
 button { font-family: inherit; }
 
+/* Baseline disabled treatment for every control the app draws itself. Written
+   against the elements rather than a list of class names so a control can't be
+   forgotten; the .btn/.icon-btn rules below override it where they differ. */
+button:disabled, input:disabled, select:disabled, textarea:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
+}
+
 /* Every control the app draws itself shares one box: 16px text (below that
    iOS zooms the page on focus), one radius, one internal padding, and a
    comfortable height. */
@@ -212,7 +229,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root { --press-scale: 1; }
+  :root { --press-scale: 1; --press-scale-subtle: 1; --press-scale-strong: 1; }
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
@@ -340,6 +357,14 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .icon-btn:active { transform: scale(var(--press-scale)); }
 .icon-btn:disabled { opacity: 0.45; cursor: default; transform: none; }
 
+/* Toggled-on icon button (the header's Today button, which switches the view
+   on and off). Without this the only feedback for "you are in Today" was the
+   view itself. currentColor keeps it correct on the green header bar and on a
+   surface alike, in both themes. */
+.icon-btn.active {
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+
 /* ---------- bottom navigation ---------- */
 
 .bottom-nav {
@@ -358,9 +383,13 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 /* No backdrop-filter (older Android WebViews): a translucent bar over
-   scrolling content would be unreadable, so go fully opaque instead. */
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .bottom-nav { background: var(--nav-bg-solid); }
+   scrolling content would be unreadable, so go fully opaque instead.
+   Nested rather than `not ((a) or (b))`: De Morgan makes the two identical,
+   and the nested form is the one every parser actually implements. */
+@supports not (backdrop-filter: blur(1px)) {
+  @supports not (-webkit-backdrop-filter: blur(1px)) {
+    .bottom-nav { background: var(--nav-bg-solid); }
+  }
 }
 
 .bottom-nav-item {
@@ -372,7 +401,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   gap: 2px;
   background: none;
   border: none;
-  padding: var(--sp-1) 0 3px;
+  padding: var(--sp-1) 0;
   cursor: pointer;
   color: var(--text-faint);
   min-height: 52px;
@@ -385,7 +414,9 @@ input, textarea, select, button { font-size: var(--fs-body); }
   position: relative;
   font-size: 1.25rem;
   line-height: 1;
-  padding: var(--sp-1) 11px;
+  /* 20px glyph + 12px each side = a 44px pill, so the visible highlight and
+     the minimum hit area are the same shape. */
+  padding: var(--sp-1) var(--sp-3);
   border-radius: 999px;
   transition: background var(--dur-base) var(--ease-standard), color var(--dur-base) var(--ease-standard);
 }
@@ -401,7 +432,9 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 /* iPhone-SE-class widths: 6 tabs × 11px labels would collide, so drop one
-   step rather than let "Inventory" wrap or clip. */
+   step rather than let "Inventory" wrap or clip. This is the one place in the
+   app that goes below 11px, and it's the same 10pt iOS itself uses for tab
+   labels on compact widths — the alternative is a clipped word. */
 @media (max-width: 340px) {
   .bottom-nav-label { font-size: 0.625rem; }
 }
@@ -440,6 +473,16 @@ input, textarea, select, button { font-size: var(--fs-body); }
   flex-direction: column;
   overflow-y: auto;
   min-height: 0;
+  /* Every view mounts through this element, so one short cross-fade covers
+     both switching tabs and drilling into a detail page. Opacity only: a
+     transform here would make the panel a containing block for the
+     position: fixed modals the views render inside it. */
+  animation: view-in var(--dur-base) var(--ease-standard);
+}
+
+@keyframes view-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .messages {
@@ -448,14 +491,14 @@ input, textarea, select, button { font-size: var(--fs-body); }
   padding: var(--sp-3) var(--gutter);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-3);
 }
 
 .empty-hint {
   color: var(--text-faint);
   font-size: var(--fs-subhead);
   text-align: center;
-  margin-top: 40px;
+  margin-top: var(--sp-8);
   padding: 0 var(--sp-5);
 }
 
@@ -467,7 +510,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   gap: var(--sp-2);
   color: var(--text-faint);
   text-align: center;
-  margin: 48px auto 0;
+  margin: var(--sp-8) auto 0;
   padding: 0 var(--sp-6);
   max-width: 320px;
 }
@@ -505,7 +548,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 
 .bubble {
   max-width: 85%;
-  padding: 10px var(--sp-3);
+  padding: var(--sp-3);
   border-radius: var(--r-lg);
   font-size: var(--fs-body);
   line-height: var(--lh-body);
@@ -560,7 +603,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .bubble-img {
   max-width: 100%;
   border-radius: var(--r-md);
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-2);
   display: block;
 }
 
@@ -595,13 +638,16 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .bubble-actions button:active { transform: scale(var(--press-scale)); }
 .bubble-actions button.active { opacity: 1; color: var(--primary-soft); }
 
+/* The three banners (error / applied / confirm) all carry sentences the user
+   has to read and act on, so they share the Subhead step rather than the
+   Footnote one used for captions. */
 .error-banner {
   background: var(--danger-soft);
   color: var(--danger);
-  padding: 10px var(--sp-3);
+  padding: var(--sp-3);
   margin: 0 var(--gutter) var(--sp-2);
   border-radius: var(--r-md);
-  font-size: var(--fs-footnote);
+  font-size: var(--fs-subhead);
   line-height: var(--lh-body);
 }
 
@@ -629,7 +675,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   flex: 1;
   min-width: 0;
   min-height: var(--tap);
-  padding: 11px var(--sp-3);
+  padding: var(--sp-3);
   border: var(--hairline) solid var(--border);
   border-radius: 22px;
   /* Exactly 16px: anything smaller makes iOS zoom the page on focus. */
@@ -651,11 +697,11 @@ input, textarea, select, button { font-size: var(--fs-body); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--sp-2);
   background: var(--primary);
   color: var(--on-primary);
   border: none;
-  padding: 11px var(--sp-5);
+  padding: var(--sp-3) var(--sp-5);
   min-height: var(--tap);
   border-radius: 22px;
   font-size: var(--fs-callout);
@@ -688,7 +734,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 .dark .btn-ghost { color: var(--primary-soft); }
 
-.btn-block { width: 100%; margin-bottom: 10px; }
+.btn-block { width: 100%; margin-bottom: var(--sp-3); }
 
 .btn-danger {
   background: var(--danger);
@@ -699,17 +745,17 @@ input, textarea, select, button { font-size: var(--fs-body); }
 
 /* "small" is a smaller type size and a tighter horizontal inset — never a
    smaller target: the box still holds 44px. */
-.btn.small { padding: var(--sp-2) 14px; font-size: var(--fs-footnote); min-height: var(--tap); }
+.btn.small { padding: var(--sp-2) var(--sp-4); font-size: var(--fs-footnote); min-height: var(--tap); }
 .btn-ghost.small { background: none; }
 .btn-danger.small { width: auto; margin-top: 0; }
 
 /* Visually small, still a full target: the glyph keeps its 1rem size while
    the button box stays at the 44px minimum. */
-.icon-btn.small { font-size: 1rem; padding: 6px var(--sp-2); min-width: var(--tap); min-height: var(--tap); }
+.icon-btn.small { font-size: 1rem; padding: var(--sp-2); min-width: var(--tap); min-height: var(--tap); }
 
 /* Photo preview / caption editor before sending */
 .photo-preview {
-  padding: 10px var(--gutter);
+  padding: var(--sp-3) var(--gutter);
   background: var(--surface);
   border-top: var(--hairline) solid var(--border);
 }
@@ -723,7 +769,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 
 .photo-preview textarea {
   width: 100%;
-  padding: 10px var(--sp-3);
+  padding: var(--sp-3);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
   background: var(--bg);
@@ -776,7 +822,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .listening-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   background: var(--surface);
   border-top: var(--hairline) solid var(--border);
@@ -838,13 +884,13 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .followup-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   min-height: 40px;
   background: color-mix(in srgb, var(--primary) 10%, var(--surface));
   border: var(--hairline) solid color-mix(in srgb, var(--primary) 40%, var(--border));
   color: var(--text);
   border-radius: var(--r-lg);
-  padding: 9px 14px;
+  padding: var(--sp-2) var(--sp-4);
   font-size: var(--fs-footnote);
   font-family: inherit;
   text-align: left;
@@ -951,8 +997,8 @@ input, textarea, select, button { font-size: var(--fs-body); }
   display: block;
   width: 100%;
   min-height: var(--tap);
-  padding: 10px var(--sp-3);
-  margin-top: 6px;
+  padding: var(--sp-3);
+  margin-top: var(--sp-2);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
   /* 16px again — a 15px field is enough to trigger iOS zoom-on-focus. */
@@ -985,7 +1031,10 @@ input, textarea, select, button { font-size: var(--fs-body); }
 
 .modal hr { border: none; border-top: var(--hairline) solid var(--border); margin: var(--sp-4) 0 var(--sp-3); }
 
-.hint { font-size: var(--fs-footnote); line-height: var(--lh-body); color: var(--text-faint); }
+/* .hint carries real explanatory copy in Settings and the backup dialogs, not
+   just one-word captions — Subhead is the floor for something meant to be read
+   through. */
+.hint { font-size: var(--fs-subhead); line-height: var(--lh-body); color: var(--text-faint); }
 
 /* Chat list modal */
 .chat-list {
@@ -1017,7 +1066,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   text-align: left;
   background: none;
   border: none;
-  padding: 11px var(--sp-3);
+  padding: var(--sp-3);
   font-size: var(--fs-callout);
   font-family: inherit;
   cursor: pointer;
@@ -1036,7 +1085,9 @@ input, textarea, select, button { font-size: var(--fs-body); }
   letter-spacing: var(--tracking-headline);
   color: var(--primary-soft);
 }
-.help-content p { margin: 0 0 6px; font-size: var(--fs-subhead); color: var(--text-dim); line-height: var(--lh-body); }
+/* The manual is the longest read in the app — Callout rather than Subhead, so
+   a paragraph of it is comfortable on a phone held at arm's length. */
+.help-content p { margin: 0 0 var(--sp-2); font-size: var(--fs-callout); color: var(--text-dim); line-height: var(--lh-body); }
 
 /* Instructional reference text worth selecting/copying. */
 .help-content, .help-content * {
@@ -1067,8 +1118,10 @@ input, textarea, select, button { font-size: var(--fs-body); }
   flex-shrink: 0;
 }
 
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .view-header { background: var(--bg); }
+@supports not (backdrop-filter: blur(1px)) {
+  @supports not (-webkit-backdrop-filter: blur(1px)) {
+    .view-header { background: var(--bg); }
+  }
 }
 
 /* Pull the leading/trailing icon buttons' own padding back out, so their
@@ -1106,11 +1159,11 @@ input, textarea, select, button { font-size: var(--fs-body); }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-1);
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-lg);
-  padding: 10px;
+  padding: var(--sp-3);
   cursor: pointer;
   text-align: center;
   position: relative;
@@ -1162,10 +1215,11 @@ input, textarea, select, button { font-size: var(--fs-body); }
   font-weight: 700;
   line-height: 1.4;
   padding: 1px var(--sp-2);
-  border-radius: 10px;
+  /* Fully rounded, like every other badge and count pill in the app. */
+  border-radius: 999px;
 }
 
-.item-card-badge.inline { position: static; margin-left: var(--sp-1); }
+.item-card-badge.inline { position: static; margin-left: var(--sp-2); }
 
 /* Detail pages */
 .item-detail { padding: var(--sp-3) var(--gutter) var(--sp-5); overflow-y: auto; }
@@ -1181,7 +1235,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   transition: transform var(--dur-fast) var(--ease-out);
 }
 
-.detail-hero:active { transform: scale(0.99); }
+.detail-hero:active { transform: scale(var(--press-scale-subtle)); }
 
 .detail-hero img {
   width: 100%;
@@ -1213,11 +1267,11 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: 999px;
-  padding: 6px var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   font-size: var(--fs-footnote);
   line-height: 1.35;
   color: var(--text-dim);
@@ -1227,7 +1281,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .chip.due { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
 .chip.due i { color: var(--warn); }
 
-.qty-chip { padding: 2px 6px; gap: var(--sp-1); }
+.qty-chip { padding: var(--sp-1) var(--sp-2); gap: var(--sp-1); }
 .qty-btn {
   position: relative;
   background: var(--surface-2);
@@ -1261,14 +1315,14 @@ input, textarea, select, button { font-size: var(--fs-body); }
 
 .item-notes {
   background: var(--surface-2);
-  padding: 10px var(--sp-3);
+  padding: var(--sp-3);
   border-radius: var(--r-md);
-  font-size: var(--fs-subhead);
+  font-size: var(--fs-callout);
   line-height: var(--lh-body);
   color: var(--text-dim);
   margin-bottom: var(--sp-3);
 }
-.item-notes i { color: var(--primary-soft); margin-right: 6px; }
+.item-notes i { color: var(--primary-soft); margin-right: var(--sp-2); }
 
 .item-quick-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-3); }
 
@@ -1285,27 +1339,29 @@ input, textarea, select, button { font-size: var(--fs-body); }
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
-  padding: var(--sp-3) 14px;
+  padding: var(--sp-3) var(--sp-4);
   margin-top: var(--sp-3);
 }
 
 .product-info h3 {
-  margin: 0 0 6px;
+  margin: 0 0 var(--sp-2);
   font-size: var(--fs-headline);
   letter-spacing: var(--tracking-headline);
   color: var(--primary-soft);
 }
-.product-info h3 i { margin-right: 6px; }
+.product-info h3 i { margin-right: var(--sp-2); }
 
 .product-info-body {
-  font-size: var(--fs-subhead);
+  /* Dosage and safety text off a product label — read standing in the garden,
+     so it gets the same Callout size as the codex bodies. */
+  font-size: var(--fs-callout);
   color: var(--text-dim);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .product-info-body p:first-child { margin-top: 0; }
 .product-info-body p:last-child { margin-bottom: 0; }
-.product-info-body ul, .product-info-body ol { margin: 6px 0; padding-left: var(--sp-5); }
+.product-info-body ul, .product-info-body ol { margin: var(--sp-2) 0; padding-left: var(--sp-5); }
 .product-info-body a { color: var(--primary-soft); }
 
 /* Long reference text (AI-read product label) worth selecting/copying. */
@@ -1316,19 +1372,19 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 /* Cross-module linked rows (plant ↔ routine) */
-.linked-section { margin-top: 6px; }
+.linked-section { margin-top: var(--sp-2); }
 
 .linked-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   width: 100%;
   min-height: 48px;
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
-  padding: 10px var(--sp-3);
-  margin-bottom: 6px;
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-2);
   cursor: pointer;
   color: var(--text);
   font-family: inherit;
@@ -1338,20 +1394,20 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 .linked-row:hover { background: var(--surface-2); }
-.linked-row:active { transform: scale(0.99); }
+.linked-row:active { transform: scale(var(--press-scale-subtle)); }
 .linked-row > i:first-child { color: var(--primary-soft); }
 .linked-row > i:last-child { margin-left: auto; color: var(--text-faint); }
 .linked-row .linked-sub { color: var(--text-faint); font-size: var(--fs-footnote); }
 
 /* Chronological log entries (plant history) */
-.log-list { display: flex; flex-direction: column; gap: 10px; margin-top: var(--sp-2); }
+.log-list { display: flex; flex-direction: column; gap: var(--sp-3); margin-top: var(--sp-2); }
 .log-item {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-3);
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
-  padding: 10px;
+  padding: var(--sp-3);
   box-shadow: var(--shadow-1);
 }
 .log-item img {
@@ -1363,7 +1419,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   cursor: pointer;
 }
 .log-date { font-size: var(--fs-caption); color: var(--text-faint); }
-.log-text { font-size: var(--fs-footnote); line-height: var(--lh-body); color: var(--text); margin-top: 2px; }
+.log-text { font-size: var(--fs-subhead); line-height: var(--lh-body); color: var(--text); margin-top: 2px; }
 .log-kind {
   font-size: var(--fs-caption-2);
   font-weight: 700;
@@ -1425,16 +1481,16 @@ input, textarea, select, button { font-size: var(--fs-body); }
   gap: var(--sp-2);
 }
 
-.toget-add { display: flex; gap: 6px; margin-bottom: 6px; }
+.toget-add { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); }
 
 .toget-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
-  padding: 4px 6px;
+  padding: var(--sp-1) var(--sp-2);
   box-shadow: var(--shadow-1);
 }
 
@@ -1454,7 +1510,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   transition: transform var(--dur-fast) var(--ease-out);
 }
 
-.toget-check:active { transform: scale(0.92); }
+.toget-check:active { transform: scale(var(--press-scale-strong)); }
 
 .toget-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .toget-name { font-size: var(--fs-callout); line-height: 1.35; overflow: hidden; text-overflow: ellipsis; }
@@ -1474,7 +1530,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   gap: var(--sp-2);
 }
 
-.todo-add { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+.todo-add { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); align-items: center; }
 
 .todo-date {
   flex-shrink: 0;
@@ -1486,8 +1542,14 @@ input, textarea, select, button { font-size: var(--fs-body); }
   border-radius: var(--r-xl);
   color: var(--text);
   font-family: inherit;
-  font-size: var(--fs-footnote);
-  padding: 10px var(--sp-3);
+  /* 16px like every other field: a date input under 16px makes iOS zoom the
+     whole page the moment it's focused, and this one sits in a fixed-width
+     row where that zoom is especially disorienting. */
+  font-size: var(--fs-body);
+  /* Tighter sides than the other fields: this one is width-capped and shares a
+     row with the text box and the add button, so the extra 3px of glyph the
+     16px rule costs is paid for out of the padding, not the neighbours. */
+  padding: var(--sp-3) var(--sp-2);
   transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard);
 }
 
@@ -1501,11 +1563,11 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .todo-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
-  padding: 4px 6px;
+  padding: var(--sp-1) var(--sp-2);
   box-shadow: var(--shadow-1);
 }
 
@@ -1525,9 +1587,9 @@ input, textarea, select, button { font-size: var(--fs-body); }
   transition: transform var(--dur-fast) var(--ease-out);
 }
 
-.todo-check:active { transform: scale(0.92); }
+.todo-check:active { transform: scale(var(--press-scale-strong)); }
 
-.todo-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.todo-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-1); }
 
 .todo-title {
   font-size: var(--fs-callout);
@@ -1535,7 +1597,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
 .todo-notes { font-size: var(--fs-caption); line-height: 1.3; color: var(--text-faint); }
@@ -1549,7 +1611,9 @@ input, textarea, select, button { font-size: var(--fs-body); }
   border: var(--hairline) solid var(--border);
   border-radius: 999px;
   padding: 1px var(--sp-2);
-  font-size: var(--fs-caption-2);
+  /* A date is content, not a count badge — one step above the 11px reserved
+     for the tab bar and the nav badges. */
+  font-size: var(--fs-caption);
   line-height: 1.5;
   color: var(--text-dim);
 }
@@ -1576,9 +1640,9 @@ input, textarea, select, button { font-size: var(--fs-body); }
   border: var(--hairline) solid var(--primary);
   color: var(--text);
   border-radius: var(--r-md);
-  padding: 9px var(--sp-3);
+  padding: var(--sp-3);
   margin: 0 var(--gutter) var(--sp-2);
-  font-size: var(--fs-footnote);
+  font-size: var(--fs-subhead);
   line-height: var(--lh-body);
 }
 
@@ -1589,7 +1653,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   font-size: var(--fs-callout);
   font-weight: var(--fw-semibold);
   line-height: 1.5;
-  margin: 6px 0 10px;
+  margin: var(--sp-2) 0 var(--sp-3);
 }
 
 /* Confirm banner (AI-proposed updates) */
@@ -1598,13 +1662,13 @@ input, textarea, select, button { font-size: var(--fs-body); }
   border: var(--hairline) solid var(--warn);
   color: var(--text);
   border-radius: var(--r-md);
-  padding: 10px var(--sp-3);
+  padding: var(--sp-3);
   margin: 0 var(--gutter) var(--sp-2);
-  font-size: var(--fs-footnote);
+  font-size: var(--fs-subhead);
   line-height: var(--lh-body);
 }
 
-.confirm-banner-title { font-weight: var(--fw-semibold); margin-bottom: 6px; }
+.confirm-banner-title { font-weight: var(--fw-semibold); margin-bottom: var(--sp-2); }
 .confirm-banner-title i { color: var(--warn); }
 
 .confirm-row {
@@ -1617,7 +1681,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 .confirm-row span { flex: 1; }
-.confirm-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.confirm-actions { display: flex; gap: var(--sp-2); flex-shrink: 0; }
 .confirm-all { margin-top: var(--sp-2); justify-content: flex-end; }
 
 /* ---------- Codex ---------- */
@@ -1625,12 +1689,12 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .codex-search-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 10px var(--gutter) 6px;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--gutter) var(--sp-2);
   flex-shrink: 0;
 }
 
-.codex-list { padding: var(--sp-1) var(--gutter) var(--sp-5); display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+.codex-list { padding: var(--sp-1) var(--gutter) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); overflow-y: auto; }
 
 .codex-section-title {
   margin: var(--sp-2) 0 0;
@@ -1645,7 +1709,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
-  padding: var(--sp-3) 14px;
+  padding: var(--sp-3) var(--sp-4);
   box-shadow: var(--shadow-1);
 }
 
@@ -1658,7 +1722,9 @@ input, textarea, select, button { font-size: var(--fs-body); }
   letter-spacing: var(--tracking-headline);
   color: var(--primary-soft);
 }
-.codex-entry p { margin: 0; font-size: var(--fs-subhead); color: var(--text-dim); line-height: var(--lh-body); }
+/* Codex bodies are paragraphs people actually read (and copy out of), not
+   captions — one step up from the Subhead used for card metadata. */
+.codex-entry p { margin: 0; font-size: var(--fs-callout); color: var(--text-dim); line-height: var(--lh-body); }
 
 /* Codex entry bodies are reference text worth copying by hand. */
 .codex-entry p, .codex-entry p * {
@@ -1667,7 +1733,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   -webkit-touch-callout: default;
 }
 
-.codex-entry-actions { display: flex; align-items: center; gap: var(--sp-2); margin-top: 6px; }
+.codex-entry-actions { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
 .codex-source { font-size: var(--fs-caption); line-height: 1.4; color: var(--text-faint); margin-top: var(--sp-2); overflow-wrap: anywhere; }
 .codex-source a { color: var(--primary-soft); }
 
@@ -1677,7 +1743,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   color: var(--text-faint);
   text-transform: uppercase;
   letter-spacing: var(--tracking-caps);
-  margin-left: 6px;
+  margin-left: var(--sp-2);
 }
 .codex-kind i { color: var(--primary-soft); }
 
@@ -1691,7 +1757,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: 999px;
-  padding: 7px 14px;
+  padding: var(--sp-2) var(--sp-4);
   font-size: var(--fs-footnote);
   font-family: inherit;
   line-height: 1.3;
@@ -1741,12 +1807,12 @@ input, textarea, select, button { font-size: var(--fs-body); }
   display: block;
   font-size: var(--fs-footnote);
   color: var(--text-dim);
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-2);
 }
 /* 36px chip + 8px gap = 44px of pitch, so the stacked hit areas of a
    wrapped row meet without overlapping. */
 .tag-chip-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-2); }
-.tag-picker-add { display: flex; gap: 6px; }
+.tag-picker-add { display: flex; gap: var(--sp-2); }
 .tag-picker-add input {
   flex: 1;
   min-width: 0;
@@ -1772,10 +1838,10 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .weather-strip {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   flex-wrap: wrap;
   width: 100%;
-  padding: 10px var(--sp-3);
+  padding: var(--sp-3);
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-lg);
@@ -1786,7 +1852,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 /* Dashboard variant: same card, tightened so it can't crowd out the tasks. */
-.weather-strip.compact { gap: var(--sp-2); padding: var(--sp-2) 10px; border-radius: var(--r-md); }
+.weather-strip.compact { gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); }
 
 .weather-icon { flex-shrink: 0; font-size: 1.6rem; color: var(--primary-soft); }
 .weather-strip.compact .weather-icon { font-size: 1.3rem; }
@@ -1799,7 +1865,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .weather-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px var(--sp-3);
+  gap: var(--sp-1) var(--sp-3);
   margin-left: auto;
   font-size: var(--fs-footnote);
   color: var(--text-dim);
@@ -1813,8 +1879,8 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .weather-warn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 9px;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
   background: var(--warn-bg);
   border: var(--hairline) solid var(--warn);
   border-radius: 999px;
@@ -1831,7 +1897,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 /* Weather switched off: the whole card is the opt-in button. */
 .weather-prompt { cursor: pointer; min-height: 56px; transition: border-color var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-out); }
 .weather-prompt:hover { border-color: var(--primary-soft); }
-.weather-prompt:active { transform: scale(0.99); }
+.weather-prompt:active { transform: scale(var(--press-scale-subtle)); }
 .weather-prompt > i:last-child { margin-left: auto; color: var(--text-faint); }
 
 .weather-prompt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -1840,20 +1906,20 @@ input, textarea, select, button { font-size: var(--fs-body); }
 
 /* ---------- location setup modal ---------- */
 
-.weather-setup-intro { margin: 0 0 14px; font-size: var(--fs-subhead); line-height: var(--lh-body); color: var(--text-dim); }
+.weather-setup-intro { margin: 0 0 var(--sp-4); font-size: var(--fs-callout); line-height: var(--lh-body); color: var(--text-dim); }
 
-.weather-search-row { display: flex; align-items: center; gap: 6px; }
+.weather-search-row { display: flex; align-items: center; gap: var(--sp-2); }
 /* Overrides .modal input's width:100% so the search button keeps its place. */
 .weather-search-row input { flex: 1; width: auto; min-width: 0; }
 
-.weather-results { display: flex; flex-direction: column; gap: 6px; margin: 0 0 var(--sp-3); }
+.weather-results { display: flex; flex-direction: column; gap: var(--sp-2); margin: 0 0 var(--sp-3); }
 
 .weather-result {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   min-height: var(--tap);
-  padding: 10px var(--sp-3);
+  padding: var(--sp-3);
   background: var(--surface-2);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
@@ -1866,7 +1932,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 .weather-result:hover { border-color: var(--primary-soft); }
-.weather-result:active { transform: scale(0.99); }
+.weather-result:active { transform: scale(var(--press-scale-subtle)); }
 .weather-result i { color: var(--primary-soft); }
 
 /* ============================================================
@@ -1908,7 +1974,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .today-section-title i { color: var(--primary-soft); }
 
 .today-count {
-  padding: 1px 7px;
+  padding: 1px var(--sp-2);
   background: var(--surface-2);
   border: var(--hairline) solid var(--border);
   border-radius: 999px;
@@ -1937,7 +2003,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   min-height: 56px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   background: none;
   border: none;
@@ -1953,14 +2019,14 @@ input, textarea, select, button { font-size: var(--fs-body); }
 
 .today-thumb { width: 36px; height: 36px; flex-shrink: 0; border-radius: var(--r-sm); object-fit: cover; }
 
-.today-row-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.today-row-text { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
 .today-row-title { font-size: var(--fs-callout); line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .today-row-sub {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sp-2);
   font-size: var(--fs-caption);
   line-height: 1.35;
   color: var(--text-faint);
@@ -1969,7 +2035,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .today-do {
   align-self: stretch;
   min-width: 52px;
-  padding: 10px var(--sp-3);
+  padding: var(--sp-3);
   background: none;
   border: none;
   border-left: var(--hairline) solid var(--border);
@@ -1980,7 +2046,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 .today-do:hover { background: var(--surface-2); }
-.today-do:active { transform: scale(0.94); }
+.today-do:active { transform: scale(var(--press-scale-strong)); }
 .today-do:disabled { opacity: 0.45; cursor: default; transform: none; }
 
 .today-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
@@ -1988,12 +2054,12 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .today-summary {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
   padding: var(--sp-3);
   background: var(--surface);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
-  font-size: var(--fs-subhead);
+  font-size: var(--fs-callout);
   line-height: 1.5;
   color: var(--text);
 }
@@ -2035,7 +2101,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .search-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   padding: var(--sp-2) 6px;
   /* Installed as a PWA there's no browser chrome above this — clear the notch. */
   padding-top: calc(var(--sp-2) + env(safe-area-inset-top));
@@ -2044,6 +2110,8 @@ input, textarea, select, button { font-size: var(--fs-body); }
   flex-shrink: 0;
 }
 
+/* 6px of bar padding + 10px here = the same 16px gutter the results below
+   use — the same trick, and the same numbers, as the app header. */
 .search-bar-icon { color: var(--primary-soft); margin-left: 10px; }
 
 .search-input { flex: 1; min-width: 0; }
@@ -2063,13 +2131,13 @@ input, textarea, select, button { font-size: var(--fs-body); }
   padding: var(--sp-2) var(--gutter) calc(var(--sp-4) + env(safe-area-inset-bottom));
 }
 
-.search-group { margin-bottom: 14px; }
+.search-group { margin-bottom: var(--sp-4); }
 
 .search-group-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px var(--sp-1);
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-1);
   font-size: var(--fs-caption);
   font-weight: var(--fw-semibold);
   letter-spacing: var(--tracking-caps);
@@ -2093,11 +2161,11 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .search-row {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: var(--sp-3);
   width: 100%;
   min-height: 48px;
-  margin-bottom: 6px;
-  padding: 10px var(--sp-3);
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-3);
   text-align: left;
   background: var(--surface);
   color: var(--text);
@@ -2110,7 +2178,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 .search-row:hover { background: var(--surface-2); }
-.search-row:active { transform: scale(0.99); }
+.search-row:active { transform: scale(var(--press-scale-subtle)); }
 
 .search-row-icon { color: var(--primary-soft); margin-top: 2px; }
 
@@ -2160,19 +2228,19 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 .search-more {
-  padding: 2px 6px 0;
+  padding: 2px var(--sp-2) 0;
   font-size: var(--fs-footnote);
   color: var(--text-faint);
 }
 
-.search-empty { margin-top: 28px; }
-.search-ask { width: 100%; margin: var(--sp-1) 0 10px; }
+.search-empty { margin-top: var(--sp-8); }
+.search-ask { width: 100%; margin: var(--sp-1) 0 var(--sp-3); }
 
 /* ============================================================
    Plant photo compare (garden.jsx)
    ============================================================ */
 
-.compare-open { margin-bottom: 10px; }
+.compare-open { margin-bottom: var(--sp-3); }
 
 .compare-modal { max-width: 440px; }
 
@@ -2182,7 +2250,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
   /* A fixed frame is what makes the wipe meaningful: both photos occupy the
      exact same box, so the divider falls on the same point of the plant. */
   aspect-ratio: 4 / 3;
-  margin-bottom: 10px;
+  margin-bottom: var(--sp-3);
   background: var(--surface-2);
   border: var(--hairline) solid var(--border);
   border-radius: var(--r-md);
@@ -2219,7 +2287,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .compare-tag {
   position: absolute;
   top: var(--sp-2);
-  padding: 3px var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
   border-radius: 999px;
   /* Fixed dark pill rather than a theme token: it sits on a photo, not on a
      surface, so it needs contrast in both themes. */
@@ -2233,15 +2301,18 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .compare-tag.left { left: var(--sp-2); }
 .compare-tag.right { right: var(--sp-2); }
 
+/* A range input is the one control that can't be given the invisible ::after
+   hit area the small buttons use — pseudo-elements don't render on replaced
+   form controls — so the slider itself has to carry the full 44px. */
 .compare-range {
   position: absolute;
-  left: 10px;
-  bottom: 10px;
-  width: calc(100% - 20px);
-  height: 36px;
+  left: var(--sp-3);
+  bottom: var(--sp-3);
+  width: calc(100% - var(--sp-6));
+  height: var(--tap);
   margin: 0;
   padding: 0 var(--sp-2);
-  border-radius: 18px;
+  border-radius: 22px;
   background: rgba(0, 0, 0, 0.45);
   accent-color: var(--primary-soft);
   cursor: ew-resize;
@@ -2249,7 +2320,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 
 .compare-meta {
-  margin: 0 0 10px;
+  margin: 0 0 var(--sp-3);
   font-size: var(--fs-footnote);
   line-height: var(--lh-body);
   color: var(--text-dim);
@@ -2257,7 +2328,7 @@ input, textarea, select, button { font-size: var(--fs-body); }
 
 .compare-meta i { color: var(--primary-soft); }
 
-.compare-pickers { display: flex; gap: 10px; }
+.compare-pickers { display: flex; gap: var(--sp-3); }
 .compare-pickers label { flex: 1; margin-bottom: var(--sp-2); }
 
 /* Three buttons have to fit a phone-width modal. */
@@ -2285,8 +2356,8 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .backup-mode-option {
   background: var(--surface-2);
   border-radius: var(--r-md);
-  padding: 10px var(--sp-3);
-  margin-bottom: 10px;
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-3);
 }
 .backup-mode-option strong { display: block; margin-bottom: 2px; font-size: var(--fs-callout); }
-.backup-mode-option p { margin: 0; font-size: var(--fs-footnote); line-height: var(--lh-body); color: var(--text-dim); }
+.backup-mode-option p { margin: 0; font-size: var(--fs-subhead); line-height: var(--lh-body); color: var(--text-dim); }

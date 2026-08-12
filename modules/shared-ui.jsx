@@ -2,12 +2,29 @@
 // switcher, message bubbles, the bottom navigation bar, the AI-action
 // confirm banner, and the help manual.
 
+// Shared by every modal/overlay in the app: Escape closes it. One hook
+// instead of copy-pasting the same useEffect+keydown listener into a dozen
+// components (this file loads before every module that needs it — see
+// index.html's script order). Deliberately just Escape + nothing else: a
+// full focus trap is a lot more code and easy to get subtly wrong, and
+// Escape + labeled buttons + autofocus already cover the high-value case.
+function useEscapeKey(onClose) {
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+}
+
 // Generic replacements for window.confirm()/prompt() — styled to match the
 // app instead of the browser's native dialog boxes.
 function ConfirmModal({ title = "Are you sure?", message, confirmLabel = "Delete", danger = true, onConfirm, onCancel }) {
+  useEscapeKey(onCancel);
   return (
     <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <h2>{title}</h2>
         <p className="hint">{message}</p>
         <div className="modal-actions">
@@ -21,9 +38,10 @@ function ConfirmModal({ title = "Are you sure?", message, confirmLabel = "Delete
 
 function PromptModal({ title = "Enter a value", label, initialValue = "", confirmLabel = "Save", onConfirm, onCancel }) {
   const [value, setValue] = useState(initialValue);
+  useEscapeKey(onCancel);
   return (
     <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <h2>{title}</h2>
         <label>
           {label}
@@ -45,12 +63,13 @@ function PromptModal({ title = "Enter a value", label, initialValue = "", confir
 
 // Full-screen viewer for plant photos (tap a history thumbnail to open).
 function ImageLightbox({ src, caption, onClose }) {
+  useEscapeKey(onClose);
   return (
-    <div className="lightbox-backdrop" onClick={onClose}>
-      <img src={src} alt="" onClick={(e) => e.stopPropagation()} />
+    <div className="lightbox-backdrop" role="dialog" aria-modal="true" aria-label={caption || "Photo viewer"} onClick={onClose}>
+      <img src={src} alt={caption || "Photo"} onClick={(e) => e.stopPropagation()} />
       {caption && <p className="lightbox-caption">{caption}</p>}
-      <button className="icon-btn lightbox-close" onClick={onClose} title="Close">
-        <i className="bi bi-x-lg"></i>
+      <button className="icon-btn lightbox-close" onClick={onClose} title="Close" aria-label="Close">
+        <i className="bi bi-x-lg" aria-hidden="true"></i>
       </button>
     </div>
   );
@@ -74,7 +93,7 @@ function SettingsWeatherRow() {
       <hr />
       <p className="hint">Local weather: {label}</p>
       <button className="btn btn-ghost btn-block" onClick={() => setShowSetup(true)}>
-        <i className="bi bi-cloud-sun"></i> {weather.enabled ? "Change location" : "Set up local weather"}
+        <i className="bi bi-cloud-sun" aria-hidden="true"></i> {weather.enabled ? "Change location" : "Set up local weather"}
       </button>
       {showSetup && typeof WeatherSetupModal === "function" && (
         <WeatherSetupModal
@@ -204,10 +223,10 @@ function SettingsBackupSection({ onCleared }) {
 
       <div className="backup-row">
         <button className="btn btn-ghost" onClick={handleExport} disabled={exporting}>
-          <i className="bi bi-download"></i> {exporting ? "Exporting…" : "Export backup"}
+          <i className="bi bi-download" aria-hidden="true"></i> {exporting ? "Exporting…" : "Export backup"}
         </button>
         <button className="btn btn-ghost" onClick={() => fileInputRef.current.click()} disabled={importing}>
-          <i className="bi bi-upload"></i> {importing ? "Restoring…" : "Import backup"}
+          <i className="bi bi-upload" aria-hidden="true"></i> {importing ? "Restoring…" : "Import backup"}
         </button>
       </div>
       <input
@@ -218,15 +237,15 @@ function SettingsBackupSection({ onCleared }) {
         onChange={onFileChosen}
       />
 
-      {exportMsg && <p className="hint backup-status">{exportMsg}</p>}
-      {exportErr && <p className="hint backup-status error">{exportErr}</p>}
-      {importMsg && <p className="hint backup-status">{importMsg}</p>}
-      {importErr && <p className="hint backup-status error">{importErr}</p>}
+      {exportMsg && <p className="hint backup-status" role="status" aria-live="polite">{exportMsg}</p>}
+      {exportErr && <p className="hint backup-status error" role="alert">{exportErr}</p>}
+      {importMsg && <p className="hint backup-status" role="status" aria-live="polite">{importMsg}</p>}
+      {importErr && <p className="hint backup-status error" role="alert">{importErr}</p>}
 
       {importStep === "choose" && (
         <div className="modal-backdrop" onClick={cancelImport}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>Restore this backup?</h2>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="import-choose-title" onClick={(e) => e.stopPropagation()}>
+            <h2 id="import-choose-title">Restore this backup?</h2>
             <div className="backup-mode-option">
               <strong>Replace</strong>
               <p>Deletes everything currently on this device and restores the backup exactly.</p>
@@ -292,10 +311,11 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
     onCleared();
   }
 
+  useEscapeKey(onClose);
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Settings</h2>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="settings-modal-title">Settings</h2>
         <label>
           VPS API URL
           <input
@@ -357,7 +377,7 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
 
         <hr />
         <button className="btn btn-ghost btn-block" onClick={onShowHelp}>
-          <i className="bi bi-question-circle"></i> How to use Garden Companion
+          <i className="bi bi-question-circle" aria-hidden="true"></i> How to use Garden Companion
         </button>
         <p className="hint">All app data is stored only in this browser.</p>
         <button className="btn btn-danger" onClick={() => setConfirmClear(true)}>Clear all data</button>
@@ -377,18 +397,19 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
 }
 
 function ChatListModal({ chats, activeChatId, onSwitch, onNew, onRename, onDelete, onClose }) {
+  useEscapeKey(onClose);
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Chats</h2>
-        <div className="chat-list">
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="chatlist-modal-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="chatlist-modal-title">Chats</h2>
+        <div className="chat-list" role="list">
           {chats.map((c) => (
-            <div key={c.id} className={c.id === activeChatId ? "chat-row active" : "chat-row"}>
+            <div key={c.id} role="listitem" className={c.id === activeChatId ? "chat-row active" : "chat-row"}>
               <button className="chat-row-title" onClick={() => onSwitch(c.id)}>
                 {c.title || "Untitled chat"}
               </button>
-              <button className="icon-btn small" title="Rename" onClick={() => onRename(c)}><i className="bi bi-pencil"></i></button>
-              <button className="icon-btn small" title="Delete" onClick={() => onDelete(c)}><i className="bi bi-trash"></i></button>
+              <button className="icon-btn small" title="Rename" aria-label="Rename" onClick={() => onRename(c)}><i className="bi bi-pencil" aria-hidden="true"></i></button>
+              <button className="icon-btn small" title="Delete" aria-label="Delete" onClick={() => onDelete(c)}><i className="bi bi-trash" aria-hidden="true"></i></button>
             </div>
           ))}
         </div>
@@ -437,15 +458,15 @@ function MessageBubble({ msg, onRegenerate, regenerating }) {
       )}
       {msg.text && msg.kind === "text" && (
         <div className="bubble-actions">
-          <button className={speaking ? "active" : ""} title="Read aloud" onClick={toggleSpeak}>
-            <i className={speaking ? "bi bi-volume-mute" : "bi bi-volume-up"}></i>
+          <button className={speaking ? "active" : ""} title="Read aloud" aria-label="Read aloud" aria-pressed={speaking} onClick={toggleSpeak}>
+            <i className={speaking ? "bi bi-volume-mute" : "bi bi-volume-up"} aria-hidden="true"></i>
           </button>
-          <button className={copied ? "active" : ""} title="Copy" onClick={copyText}>
-            <i className={copied ? "bi bi-check2" : "bi bi-clipboard"}></i>
+          <button className={copied ? "active" : ""} title="Copy" aria-label="Copy" onClick={copyText}>
+            <i className={copied ? "bi bi-check2" : "bi bi-clipboard"} aria-hidden="true"></i>
           </button>
           {msg.role === "assistant" && onRegenerate && (
-            <button title="Regenerate" onClick={onRegenerate} disabled={regenerating}>
-              <i className="bi bi-arrow-clockwise"></i>
+            <button title="Regenerate" aria-label="Regenerate" onClick={onRegenerate} disabled={regenerating}>
+              <i className="bi bi-arrow-clockwise" aria-hidden="true"></i>
             </button>
           )}
         </div>
@@ -489,7 +510,7 @@ function PendingActionsBanner({ actions, onResolve }) {
   return (
     <div className="confirm-banner">
       <div className="confirm-banner-title">
-        <i className="bi bi-magic"></i> Sprout suggests {actions.length === 1 ? "a change" : `${actions.length} changes`}:
+        <i className="bi bi-magic" aria-hidden="true"></i> Sprout suggests {actions.length === 1 ? "a change" : `${actions.length} changes`}:
       </div>
       {actions.map((a, i) => (
         <div key={i} className="confirm-row">
@@ -514,10 +535,11 @@ function PendingActionsBanner({ actions, onResolve }) {
 // The counts come from a read of the database taken the moment the refresh
 // button was tapped, so they are proof rather than reassurance.
 function ContextPeekModal({ summary, revision, onClose }) {
+  useEscapeKey(onClose);
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Sprout can see</h2>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="context-peek-modal-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="context-peek-modal-title">Sprout can see</h2>
         <p className="context-peek">{summary}</p>
         <p className="hint">
           Re-read from this device just now (snapshot #{revision}). Sprout gets this same live list
@@ -559,6 +581,7 @@ function TagPicker({ presets, tags, onChange }) {
             type="button"
             key={t}
             className={tags.includes(t) ? "tag-chip active" : "tag-chip"}
+            aria-pressed={tags.includes(t)}
             onClick={() => toggle(t)}
           >
             {t}
@@ -569,6 +592,7 @@ function TagPicker({ presets, tags, onChange }) {
         <input
           value={custom}
           placeholder="custom tag…"
+          aria-label="Custom tag"
           onChange={(e) => setCustom(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -592,13 +616,14 @@ function TagFilterBar({ items, activeTag, onSelect }) {
   if (tags.length === 0) return null;
   return (
     <div className="tag-filter-bar">
-      <button className={!activeTag ? "tag-chip active" : "tag-chip"} onClick={() => onSelect(null)}>
+      <button className={!activeTag ? "tag-chip active" : "tag-chip"} aria-pressed={!activeTag} onClick={() => onSelect(null)}>
         All
       </button>
       {tags.map((t) => (
         <button
           key={t}
           className={activeTag === t ? "tag-chip active" : "tag-chip"}
+          aria-pressed={activeTag === t}
           onClick={() => onSelect(activeTag === t ? null : t)}
         >
           {t}
@@ -615,7 +640,7 @@ function TagChips({ tags }) {
     <React.Fragment>
       {tags.map((t) => (
         <span key={t} className="chip tag">
-          <i className="bi bi-tag"></i> {t}
+          <i className="bi bi-tag" aria-hidden="true"></i> {t}
         </span>
       ))}
     </React.Fragment>
@@ -641,10 +666,11 @@ function BottomNav({ view, onNavigate, dueCount, togetCount, todoCount }) {
         <button
           key={item.key}
           className={activeKey === item.key ? "bottom-nav-item active" : "bottom-nav-item"}
+          aria-current={activeKey === item.key ? "page" : undefined}
           onClick={() => onNavigate(item.key)}
         >
           <span className="bottom-nav-icon">
-            <i className={`bi ${item.icon}`}></i>
+            <i className={`bi ${item.icon}`} aria-hidden="true"></i>
             {item.key === "routines" && dueCount > 0 && (
               <span className="nav-badge">{dueCount > 9 ? "9+" : dueCount}</span>
             )}
@@ -663,10 +689,11 @@ function BottomNav({ view, onNavigate, dueCount, togetCount, todoCount }) {
 }
 
 function HelpModal({ onClose }) {
+  useEscapeKey(onClose);
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal help-modal" onClick={(e) => e.stopPropagation()}>
-        <h2>How to use Garden Companion</h2>
+      <div className="modal help-modal" role="dialog" aria-modal="true" aria-labelledby="help-modal-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="help-modal-title">How to use Garden Companion</h2>
         <div className="help-content">
           <h3>Getting around</h3>
           <p>The bar at the bottom switches between Chat, Garden, Routines, To-do, Inventory, and Codex. The gear in the header opens Settings.</p>

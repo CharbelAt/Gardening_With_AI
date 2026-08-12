@@ -206,7 +206,7 @@ function SearchResultRow({ hit, term, icon, onPick }) {
   const snippet = searchSnippet(item.body, hit.score === 3 ? term : "");
   return (
     <button className="search-row" onClick={() => onPick(item)}>
-      <i className={"bi " + icon + " search-row-icon"}></i>
+      <i className={"bi " + icon + " search-row-icon"} aria-hidden="true"></i>
       <span className="search-row-main">
         <span className="search-row-title">
           <SearchHighlight text={item.title} term={term} />
@@ -218,7 +218,7 @@ function SearchResultRow({ hit, term, icon, onPick }) {
         )}
         {item.sub && <span className="search-row-sub">{item.sub}</span>}
       </span>
-      <i className="bi bi-chevron-right search-row-chevron"></i>
+      <i className="bi bi-chevron-right search-row-chevron" aria-hidden="true"></i>
     </button>
   );
 }
@@ -255,14 +255,9 @@ function SearchOverlay({ onNavigate, onClose }) {
     return () => clearTimeout(timer);
   }, [raw]);
 
-  // Escape closes, like every other full-screen surface on a desktop browser.
-  useEffect(() => {
-    function onKey(e) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Escape closes, like every other full-screen surface on a desktop browser
+  // (shared-ui.jsx's useEscapeKey — this used to be its own inline listener).
+  useEscapeKey(onClose);
 
   const grouped = React.useMemo(() => (index && term ? runSearch(index, term) : null), [index, term]);
   const totalHits = grouped
@@ -296,38 +291,39 @@ function SearchOverlay({ onNavigate, onClose }) {
 
   return (
     <div className="search-overlay" onClick={onClose}>
-      <div className="search-panel" onClick={(e) => e.stopPropagation()}>
+      <div className="search-panel" role="dialog" aria-modal="true" aria-label="Search everything" onClick={(e) => e.stopPropagation()}>
         <div className="search-bar">
-          <i className="bi bi-search search-bar-icon"></i>
+          <i className="bi bi-search search-bar-icon" aria-hidden="true"></i>
           <input
             className="text-input search-input"
             autoFocus
             type="search"
             value={raw}
             placeholder="Search plants, tools, notes, chats…"
+            aria-label="Search plants, tools, notes, chats"
             onChange={(e) => setRaw(e.target.value)}
           />
           {raw && (
-            <button className="icon-btn small" title="Clear" onClick={() => setRaw("")}>
-              <i className="bi bi-x-circle"></i>
+            <button className="icon-btn small" title="Clear" aria-label="Clear" onClick={() => setRaw("")}>
+              <i className="bi bi-x-circle" aria-hidden="true"></i>
             </button>
           )}
-          <button className="icon-btn" title="Close search" onClick={onClose}>
-            <i className="bi bi-x-lg"></i>
+          <button className="icon-btn" title="Close search" aria-label="Close search" onClick={onClose}>
+            <i className="bi bi-x-lg" aria-hidden="true"></i>
           </button>
         </div>
 
         <div className="search-results">
-          {loadError && <div className="error-banner">{loadError}</div>}
+          {loadError && <div className="error-banner" role="alert">{loadError}</div>}
 
-          {index === null && <p className="empty-hint">Reading your garden…</p>}
+          {index === null && <p className="empty-hint" role="status" aria-live="polite">Reading your garden…</p>}
 
           {index !== null && !term && (
             <React.Fragment>
               {recent.length > 0 && (
                 <div className="search-group">
                   <div className="search-group-head">
-                    <i className="bi bi-clock-history"></i> Recently added
+                    <i className="bi bi-clock-history" aria-hidden="true"></i> Recently added
                   </div>
                   {recent.map((item) => (
                     <SearchResultRow
@@ -341,7 +337,7 @@ function SearchOverlay({ onNavigate, onClose }) {
                 </div>
               )}
               <div className="empty-state search-empty">
-                <i className="bi bi-search"></i>
+                <i className="bi bi-search" aria-hidden="true"></i>
                 <p>Search your whole garden at once — plants, tools, routines, to-dos, codex entries and past chats.</p>
               </div>
             </React.Fragment>
@@ -349,10 +345,10 @@ function SearchOverlay({ onNavigate, onClose }) {
 
           {index !== null && term && totalHits === 0 && (
             <div className="empty-state search-empty">
-              <i className="bi bi-search"></i>
+              <i className="bi bi-search" aria-hidden="true"></i>
               <p>Nothing saved matches "{term}".</p>
               <button className="btn small" onClick={askSprout}>
-                <i className="bi bi-chat-dots"></i> Ask Sprout about "{term}"
+                <i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout about "{term}"
               </button>
             </div>
           )}
@@ -366,7 +362,7 @@ function SearchOverlay({ onNavigate, onClose }) {
               return (
                 <div key={cat.key} className="search-group">
                   <div className="search-group-head">
-                    <i className={"bi " + cat.icon}></i> {cat.label}
+                    <i className={"bi " + cat.icon} aria-hidden="true"></i> {cat.label}
                     <span className="search-group-count">{hits.length}</span>
                   </div>
                   {shown.map((hit) => (
@@ -389,7 +385,7 @@ function SearchOverlay({ onNavigate, onClose }) {
 
           {index !== null && term && totalHits > 0 && (
             <button className="btn btn-ghost small search-ask" onClick={askSprout}>
-              <i className="bi bi-chat-dots"></i> Ask Sprout about "{term}"
+              <i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout about "{term}"
             </button>
           )}
         </div>

@@ -19,7 +19,7 @@ function ToolFields({ form, setForm }) {
     <React.Fragment>
       <label>
         Name
-        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Pruning shears, Neem oil" />
+        <input autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Pruning shears, Neem oil" />
       </label>
       <label>
         Quantity
@@ -94,6 +94,7 @@ function toolFromForm(form) {
 
 function AddToolModal({ onClose, onAdded }) {
   const [form, setForm] = useState(emptyToolForm());
+  useEscapeKey(onClose);
 
   async function save() {
     if (!form.name.trim()) return;
@@ -104,8 +105,8 @@ function AddToolModal({ onClose, onAdded }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Add tool / supply</h2>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="add-tool-modal-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="add-tool-modal-title">Add tool / supply</h2>
         <ToolFields form={form} setForm={setForm} />
         <div className="modal-actions">
           <button className="btn" onClick={save} disabled={!form.name.trim()}>Add</button>
@@ -127,6 +128,10 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
   const [form, setForm] = useState(toolFormFrom(tool));
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera
+
+  // Hooks can't be called conditionally, so this always runs; it only ever
+  // does something while the edit modal is actually open.
+  useEscapeKey(() => editing && setEditing(false));
 
   async function saveForm() {
     await updateTool({ ...tool, ...toolFromForm(form) });
@@ -230,7 +235,7 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
+        <button className="icon-btn" onClick={onBack} aria-label="Back"><i className="bi bi-arrow-left" aria-hidden="true"></i></button>
         <h2>{tool.name || "Unnamed item"}</h2>
         <button
           className="icon-btn"
@@ -239,8 +244,9 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
             setEditing(true);
           }}
           title="Edit"
+          aria-label="Edit"
         >
-          <i className="bi bi-pencil"></i>
+          <i className="bi bi-pencil" aria-hidden="true"></i>
         </button>
       </div>
 
@@ -250,42 +256,42 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
             <img src={tool.photoThumb} alt={tool.name} />
           </button>
         ) : (
-          <div className="detail-hero placeholder"><i className="bi bi-tools"></i></div>
+          <div className="detail-hero placeholder"><i className="bi bi-tools" aria-hidden="true"></i></div>
         )}
 
         <div className="fact-chips">
           <span className="chip qty-chip">
-            <button className="qty-btn" onClick={() => bumpQuantity(-1)} title="One less"><i className="bi bi-dash"></i></button>
-            <span><i className="bi bi-boxes"></i> {tool.quantity}</span>
-            <button className="qty-btn" onClick={() => bumpQuantity(1)} title="One more"><i className="bi bi-plus"></i></button>
+            <button className="qty-btn" onClick={() => bumpQuantity(-1)} title="One less" aria-label="One less"><i className="bi bi-dash" aria-hidden="true"></i></button>
+            <span><i className="bi bi-boxes" aria-hidden="true"></i> {tool.quantity}</span>
+            <button className="qty-btn" onClick={() => bumpQuantity(1)} title="One more" aria-label="One more"><i className="bi bi-plus" aria-hidden="true"></i></button>
           </span>
-          {tool.brand && <span className="chip"><i className="bi bi-award"></i> {tool.brand}</span>}
-          {tool.condition && <span className="chip"><i className="bi bi-heart-pulse"></i> {tool.condition}</span>}
-          {tool.location && <span className="chip"><i className="bi bi-geo-alt"></i> {tool.location}</span>}
-          {tool.purchaseDate && <span className="chip"><i className="bi bi-bag"></i> bought {tool.purchaseDate}</span>}
-          {tool.price != null && tool.price !== "" && <span className="chip"><i className="bi bi-cash"></i> {tool.price}</span>}
-          <span className="chip"><i className="bi bi-hand-index"></i> used {timeAgo(tool.lastUsed)}</span>
-          <span className="chip"><i className="bi bi-calendar3"></i> added {tool.createdAt ? timeAgo(tool.createdAt) : "unknown"}</span>
+          {tool.brand && <span className="chip"><i className="bi bi-award" aria-hidden="true"></i> {tool.brand}</span>}
+          {tool.condition && <span className="chip"><i className="bi bi-heart-pulse" aria-hidden="true"></i> {tool.condition}</span>}
+          {tool.location && <span className="chip"><i className="bi bi-geo-alt" aria-hidden="true"></i> {tool.location}</span>}
+          {tool.purchaseDate && <span className="chip"><i className="bi bi-bag" aria-hidden="true"></i> bought {tool.purchaseDate}</span>}
+          {tool.price != null && tool.price !== "" && <span className="chip"><i className="bi bi-cash" aria-hidden="true"></i> {tool.price}</span>}
+          <span className="chip"><i className="bi bi-hand-index" aria-hidden="true"></i> used {timeAgo(tool.lastUsed)}</span>
+          <span className="chip"><i className="bi bi-calendar3" aria-hidden="true"></i> added {tool.createdAt ? timeAgo(tool.createdAt) : "unknown"}</span>
           <TagChips tags={tool.tags} />
         </div>
-        {tool.notes && <div className="item-notes"><i className="bi bi-journal-text"></i> {tool.notes}</div>}
+        {tool.notes && <div className="item-notes"><i className="bi bi-journal-text" aria-hidden="true"></i> {tool.notes}</div>}
 
         <div className="item-quick-actions">
-          <button className="btn small" onClick={markUsed}><i className="bi bi-hand-index"></i> Mark used</button>
+          <button className="btn small" onClick={markUsed}><i className="bi bi-hand-index" aria-hidden="true"></i> Mark used</button>
           <button className="btn small" onClick={() => cameraInputRef.current.click()} disabled={busy}>
-            <i className="bi bi-camera"></i> {busy ? "Analyzing…" : "Camera"}
+            <i className="bi bi-camera" aria-hidden="true"></i> {busy ? "Analyzing…" : "Camera"}
           </button>
           <button className="btn small" onClick={() => fileInputRef.current.click()} disabled={busy}>
-            <i className="bi bi-images"></i> Gallery
+            <i className="bi bi-images" aria-hidden="true"></i> Gallery
           </button>
           {tool.photoThumb && (
             <button className="btn btn-ghost small" onClick={() => setConfirmPhotoRemove(true)}>
-              <i className="bi bi-x-circle"></i> Remove photo
+              <i className="bi bi-x-circle" aria-hidden="true"></i> Remove photo
             </button>
           )}
-          <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots"></i> Ask Sprout</button>
+          <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout</button>
           <button className="btn btn-ghost small" onClick={() => onNavigate("codex", { query: tool.name })}>
-            <i className="bi bi-book"></i> Codex
+            <i className="bi bi-book" aria-hidden="true"></i> Codex
           </button>
         </div>
         <input
@@ -304,7 +310,7 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
           onChange={onPhotoChosen}
         />
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
         <PendingActionsBanner
           actions={pendingActions}
           onResolve={(next) => {
@@ -313,10 +319,10 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
           }}
         />
 
-        {busy && <p className="empty-hint">Reading the label…</p>}
+        {busy && <p className="empty-hint" role="status" aria-live="polite">Reading the label…</p>}
         {tool.productInfo && (
           <div className="product-info">
-            <h3><i className="bi bi-upc-scan"></i> Product info</h3>
+            <h3><i className="bi bi-upc-scan" aria-hidden="true"></i> Product info</h3>
             <div
               className="product-info-body"
               dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(tool.productInfo) }}
@@ -351,8 +357,8 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
 
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>Edit item</h2>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-tool-modal-title" onClick={(e) => e.stopPropagation()}>
+            <h2 id="edit-tool-modal-title">Edit item</h2>
             <ToolFields form={form} setForm={setForm} />
             <div className="modal-actions">
               <button className="btn" onClick={saveForm} disabled={!form.name.trim()}>Save</button>
@@ -431,17 +437,17 @@ function InventoryView({ initialId, onNavigate }) {
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <h2><i className="bi bi-box-seam"></i> Inventory</h2>
+        <h2><i className="bi bi-box-seam" aria-hidden="true"></i> Inventory</h2>
         {section === "items" && (
-          <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add item"><i className="bi bi-plus-lg"></i></button>
+          <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add item" aria-label="Add item"><i className="bi bi-plus-lg" aria-hidden="true"></i></button>
         )}
       </div>
 
       <div className="tag-filter-bar">
-        <button className={section === "items" ? "tag-chip active" : "tag-chip"} onClick={() => setSection("items")}>
+        <button className={section === "items" ? "tag-chip active" : "tag-chip"} aria-pressed={section === "items"} onClick={() => setSection("items")}>
           Items
         </button>
-        <button className={section === "toget" ? "tag-chip active" : "tag-chip"} onClick={() => setSection("toget")}>
+        <button className={section === "toget" ? "tag-chip active" : "tag-chip"} aria-pressed={section === "toget"} onClick={() => setSection("toget")}>
           To get{openCount > 0 ? ` (${openCount})` : ""}
         </button>
       </div>
@@ -452,7 +458,7 @@ function InventoryView({ initialId, onNavigate }) {
           <div className="item-grid">
             {tools.length === 0 && (
               <div className="empty-state">
-                <i className="bi bi-box-seam"></i>
+                <i className="bi bi-box-seam" aria-hidden="true"></i>
                 <p>No tools or supplies yet — tap + to add one, or tell Sprout what you bought.</p>
               </div>
             )}
@@ -464,7 +470,7 @@ function InventoryView({ initialId, onNavigate }) {
                 {t.photoThumb ? (
                   <img src={t.photoThumb} alt={t.name} />
                 ) : (
-                  <div className="item-card-placeholder"><i className="bi bi-tools"></i></div>
+                  <div className="item-card-placeholder"><i className="bi bi-tools" aria-hidden="true"></i></div>
                 )}
                 <span className="item-card-title">{t.name || "Unnamed item"}</span>
                 <span className="item-card-sub">
@@ -476,31 +482,32 @@ function InventoryView({ initialId, onNavigate }) {
           </div>
         </React.Fragment>
       ) : (
-        <div className="toget-panel">
-          <div className="toget-add">
+        <div className="toget-panel" role="list">
+          <div className="toget-add" role="listitem">
             <input
               className="text-input"
               placeholder="Add something to get…"
+              aria-label="Add something to get"
               value={newToGet}
               onChange={(e) => setNewToGet(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addToGet()}
             />
-            <button className="btn btn-send" onClick={addToGet} disabled={!newToGet.trim()} title="Add">
-              <i className="bi bi-plus-lg"></i>
+            <button className="btn btn-send" onClick={addToGet} disabled={!newToGet.trim()} title="Add" aria-label="Add">
+              <i className="bi bi-plus-lg" aria-hidden="true"></i>
             </button>
           </div>
           {shopping.length === 0 && (
             <div className="empty-state">
-              <i className="bi bi-cart"></i>
+              <i className="bi bi-cart" aria-hidden="true"></i>
               <p>Nothing to get — add items here, or tell Sprout "I need to buy…".</p>
             </div>
           )}
           {[...shopping]
             .sort((a, b) => (a.done ? 1 : 0) - (b.done ? 1 : 0) || b.id - a.id)
             .map((s) => (
-              <div key={s.id} className={s.done ? "toget-row done" : "toget-row"}>
-                <button className="toget-check" onClick={() => toggleToGet(s)} title={s.done ? "Uncheck" : "Check off"}>
-                  <i className={s.done ? "bi bi-check-square-fill" : "bi bi-square"}></i>
+              <div key={s.id} role="listitem" className={s.done ? "toget-row done" : "toget-row"}>
+                <button className="toget-check" onClick={() => toggleToGet(s)} title={s.done ? "Uncheck" : "Check off"} aria-label={s.done ? "Uncheck" : "Check off"} aria-pressed={s.done}>
+                  <i className={s.done ? "bi bi-check-square-fill" : "bi bi-square"} aria-hidden="true"></i>
                 </button>
                 <div className="toget-text">
                   <span className="toget-name">
@@ -511,11 +518,11 @@ function InventoryView({ initialId, onNavigate }) {
                 </div>
                 {s.done && (
                   <button className="btn btn-ghost small" onClick={() => moveToInventory(s)} title="Move to inventory">
-                    <i className="bi bi-box-seam"></i> To inventory
+                    <i className="bi bi-box-seam" aria-hidden="true"></i> To inventory
                   </button>
                 )}
-                <button className="icon-btn small" onClick={() => removeToGet(s)} title="Remove">
-                  <i className="bi bi-trash"></i>
+                <button className="icon-btn small" onClick={() => removeToGet(s)} title="Remove" aria-label="Remove">
+                  <i className="bi bi-trash" aria-hidden="true"></i>
                 </button>
               </div>
             ))}

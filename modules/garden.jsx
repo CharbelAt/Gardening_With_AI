@@ -10,6 +10,7 @@ function AddPlantModal({ onClose, onAdded }) {
   const [plantingDate, setPlantingDate] = useState("");
   const [notes, setNotes] = useState("");
   const [tags, setTags] = useState([]);
+  useEscapeKey(onClose);
 
   async function save() {
     if (!name.trim()) return;
@@ -20,11 +21,11 @@ function AddPlantModal({ onClose, onAdded }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Add plant</h2>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="add-plant-modal-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="add-plant-modal-title">Add plant</h2>
         <label>
           Name / species
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Tomato #1" />
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Tomato #1" />
         </label>
         <label>
           Location
@@ -72,6 +73,7 @@ function PhotoCompareOverlay({ plant, photos, onClose }) {
   const [afterIdx, setAfterIdx] = useState(photos.length - 1);
   const [reveal, setReveal] = useState(50); // % of the frame showing the "before" photo
   const [lightbox, setLightbox] = useState(null); // { src, caption }
+  useEscapeKey(onClose);
 
   if (!photos || photos.length < 2) return null; // nothing to compare against
 
@@ -87,16 +89,16 @@ function PhotoCompareOverlay({ plant, photos, onClose }) {
   return (
     <React.Fragment>
       <div className="modal-backdrop" onClick={onClose}>
-        <div className="modal compare-modal" onClick={(e) => e.stopPropagation()}>
-          <h2>Compare photos</h2>
+        <div className="modal compare-modal" role="dialog" aria-modal="true" aria-labelledby="compare-modal-title" onClick={(e) => e.stopPropagation()}>
+          <h2 id="compare-modal-title">Compare photos</h2>
 
           <div className="compare-stage">
-            <img className="compare-img" src={after.imageThumb} alt="" />
+            <img className="compare-img" src={after.imageThumb} alt={`After: ${dateLabel(after)}`} />
             <img
               className="compare-img compare-img-before"
               style={{ clipPath: `inset(0 ${100 - reveal}% 0 0)` }}
               src={before.imageThumb}
-              alt=""
+              alt={`Before: ${dateLabel(before)}`}
             />
             <div className="compare-divider" style={{ left: `${reveal}%` }}></div>
             <span className="compare-tag left">{dateLabel(before)}</span>
@@ -114,7 +116,7 @@ function PhotoCompareOverlay({ plant, photos, onClose }) {
           </div>
 
           <p className="compare-meta">
-            <i className="bi bi-arrow-left-right"></i>{" "}
+            <i className="bi bi-arrow-left-right" aria-hidden="true"></i>{" "}
             {daysApart === null
               ? "these entries have no dates"
               : daysApart === 0
@@ -146,13 +148,13 @@ function PhotoCompareOverlay({ plant, photos, onClose }) {
               className="btn btn-ghost small"
               onClick={() => setLightbox({ src: before.imageThumb, caption: `${dateLabel(before)} — ${before.analysis || plant.name}` })}
             >
-              <i className="bi bi-arrows-fullscreen"></i> Before
+              <i className="bi bi-arrows-fullscreen" aria-hidden="true"></i> Before
             </button>
             <button
               className="btn btn-ghost small"
               onClick={() => setLightbox({ src: after.imageThumb, caption: `${dateLabel(after)} — ${after.analysis || plant.name}` })}
             >
-              <i className="bi bi-arrows-fullscreen"></i> After
+              <i className="bi bi-arrows-fullscreen" aria-hidden="true"></i> After
             </button>
             <button className="btn small" onClick={onClose}>Close</button>
           </div>
@@ -180,6 +182,10 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   const [form, setForm] = useState(plantFormFrom(plant));
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera
+
+  // Unconditional (rules of hooks) — only actually closes anything while the
+  // edit modal is open.
+  useEscapeKey(() => editing && setEditing(false));
 
   useEffect(() => {
     (async () => {
@@ -320,7 +326,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
+        <button className="icon-btn" onClick={onBack} aria-label="Back"><i className="bi bi-arrow-left" aria-hidden="true"></i></button>
         <h2>{plant.name || "Unnamed plant"}</h2>
         <button
           className="icon-btn"
@@ -329,8 +335,9 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
             setEditing(true);
           }}
           title="Edit"
+          aria-label="Edit"
         >
-          <i className="bi bi-pencil"></i>
+          <i className="bi bi-pencil" aria-hidden="true"></i>
         </button>
       </div>
 
@@ -340,29 +347,29 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
             <img src={heroSrc} alt={plant.name} />
           </button>
         ) : (
-          <div className="detail-hero placeholder"><i className="bi bi-flower3"></i></div>
+          <div className="detail-hero placeholder"><i className="bi bi-flower3" aria-hidden="true"></i></div>
         )}
 
         <div className="fact-chips">
           {facts.map((f, i) => (
-            <span key={i} className="chip"><i className={`bi ${f.icon}`}></i> {f.label}</span>
+            <span key={i} className="chip"><i className={`bi ${f.icon}`} aria-hidden="true"></i> {f.label}</span>
           ))}
           <TagChips tags={plant.tags} />
         </div>
-        {plant.notes && <div className="item-notes"><i className="bi bi-journal-text"></i> {plant.notes}</div>}
+        {plant.notes && <div className="item-notes"><i className="bi bi-journal-text" aria-hidden="true"></i> {plant.notes}</div>}
 
         <div className="item-quick-actions">
-          <button className="btn small" onClick={markWatered}><i className="bi bi-droplet"></i> Watered</button>
-          <button className="btn small" onClick={markFertilized}><i className="bi bi-flower2"></i> Fertilized</button>
+          <button className="btn small" onClick={markWatered}><i className="bi bi-droplet" aria-hidden="true"></i> Watered</button>
+          <button className="btn small" onClick={markFertilized}><i className="bi bi-flower2" aria-hidden="true"></i> Fertilized</button>
           <button className="btn small" onClick={() => cameraInputRef.current.click()} disabled={busy}>
-            <i className="bi bi-camera"></i> {busy ? "Analyzing…" : "Camera"}
+            <i className="bi bi-camera" aria-hidden="true"></i> {busy ? "Analyzing…" : "Camera"}
           </button>
           <button className="btn small" onClick={() => fileInputRef.current.click()} disabled={busy}>
-            <i className="bi bi-images"></i> Gallery
+            <i className="bi bi-images" aria-hidden="true"></i> Gallery
           </button>
-          <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots"></i> Ask Sprout</button>
+          <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout</button>
           <button className="btn btn-ghost small" onClick={() => onNavigate("codex", { query: plant.name })}>
-            <i className="bi bi-book"></i> Codex
+            <i className="bi bi-book" aria-hidden="true"></i> Codex
           </button>
         </div>
         <input
@@ -381,7 +388,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
           onChange={onPhotoChosen}
         />
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
         <PendingActionsBanner
           actions={pendingActions}
           onResolve={(next) => {
@@ -395,11 +402,11 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
             <h3>Care routines</h3>
             {linkedRoutines.map((r) => (
               <button key={r.id} className="linked-row" onClick={() => onNavigate("routines", { itemId: r.id })}>
-                <i className="bi bi-arrow-repeat"></i>
+                <i className="bi bi-arrow-repeat" aria-hidden="true"></i>
                 <span>{r.task}</span>
                 <span className="linked-sub">every {r.intervalDays}d</span>
                 {isRoutineDue(r) && <span className="item-card-badge inline">Due</span>}
-                <i className="bi bi-chevron-right"></i>
+                <i className="bi bi-chevron-right" aria-hidden="true"></i>
               </button>
             ))}
           </div>
@@ -408,7 +415,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
         <h3>History</h3>
         {photoEntries.length >= 2 && (
           <button className="btn btn-ghost small compare-open" onClick={() => setComparing(true)}>
-            <i className="bi bi-layout-split"></i> Compare photos
+            <i className="bi bi-layout-split" aria-hidden="true"></i> Compare photos
           </button>
         )}
         {(!plant.photoHistory || plant.photoHistory.length === 0) && (
@@ -421,10 +428,22 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
             .map((p, i) => (
               <div key={i} className="log-item">
                 {p.imageThumb && (
+                  // A bare <img onClick> has no keyboard path — role=button +
+                  // tabIndex + Enter/Space make it operable without changing
+                  // the element (a wrapping <button> here would pick up
+                  // default button chrome from styles.css we don't own).
                   <img
                     src={p.imageThumb}
-                    alt=""
+                    alt={p.analysis || "Plant photo"}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setLightbox({ src: p.imageThumb, caption: p.analysis })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setLightbox({ src: p.imageThumb, caption: p.analysis });
+                      }
+                    }}
                   />
                 )}
                 <div>
@@ -458,11 +477,11 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
 
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>Edit plant</h2>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-plant-modal-title" onClick={(e) => e.stopPropagation()}>
+            <h2 id="edit-plant-modal-title">Edit plant</h2>
             <label>
               Name / species
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              <input autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </label>
             <label>
               Location
@@ -530,14 +549,14 @@ function GardenView({ initialId, onNavigate }) {
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <h2><i className="bi bi-flower3"></i> Garden</h2>
-        <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add plant"><i className="bi bi-plus-lg"></i></button>
+        <h2><i className="bi bi-flower3" aria-hidden="true"></i> Garden</h2>
+        <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add plant" aria-label="Add plant"><i className="bi bi-plus-lg" aria-hidden="true"></i></button>
       </div>
       <TagFilterBar items={plants} activeTag={activeTag} onSelect={setActiveTag} />
       <div className="item-grid">
         {plants.length === 0 && (
           <div className="empty-state">
-            <i className="bi bi-flower3"></i>
+            <i className="bi bi-flower3" aria-hidden="true"></i>
             <p>No plants yet — tap + to add one, or just tell Sprout about a plant in chat.</p>
           </div>
         )}
@@ -552,12 +571,12 @@ function GardenView({ initialId, onNavigate }) {
               {cardSrc ? (
                 <img src={cardSrc} alt={p.name} />
               ) : (
-                <div className="item-card-placeholder"><i className="bi bi-flower3"></i></div>
+                <div className="item-card-placeholder"><i className="bi bi-flower3" aria-hidden="true"></i></div>
               )}
               <span className="item-card-title">{p.name || "Unnamed plant"}</span>
               <span className="item-card-sub">
                 {p.location ? `${p.location} · ` : ""}
-                <i className="bi bi-droplet"></i> {timeAgo(p.lastWatered)}
+                <i className="bi bi-droplet" aria-hidden="true"></i> {timeAgo(p.lastWatered)}
               </span>
             </button>
           );

@@ -49,11 +49,12 @@ function EditTodoModal({ todo, onSave, onCancel }) {
   const [text, setText] = useState(todo.text || "");
   const [dueDate, setDueDate] = useState(todo.dueDate || "");
   const [notes, setNotes] = useState(todo.notes || "");
+  useEscapeKey(onCancel);
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Edit to-do</h2>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-todo-modal-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="edit-todo-modal-title">Edit to-do</h2>
         <label>
           Task
           <input
@@ -136,19 +137,20 @@ function TodosView({ onNavigate }) {
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <h2><i className="bi bi-check2-square"></i> To-do</h2>
+        <h2><i className="bi bi-check2-square" aria-hidden="true"></i> To-do</h2>
         {doneCount > 0 && (
           <button className="btn btn-ghost small" onClick={() => setConfirmClearDone(true)}>
-            <i className="bi bi-eraser"></i> Clear completed
+            <i className="bi bi-eraser" aria-hidden="true"></i> Clear completed
           </button>
         )}
       </div>
 
-      <div className="todo-panel">
-        <div className="todo-add">
+      <div className="todo-panel" role="list">
+        <div className="todo-add" role="listitem">
           <input
             className="text-input"
             placeholder="Add a task…"
+            aria-label="Add a task"
             value={newText}
             onChange={(e) => setNewText(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addNew()}
@@ -157,17 +159,18 @@ function TodosView({ onNavigate }) {
             className="todo-date"
             type="date"
             title="Due date (optional)"
+            aria-label="Due date (optional)"
             value={newDue}
             onChange={(e) => setNewDue(e.target.value)}
           />
-          <button className="btn btn-send" onClick={addNew} disabled={!newText.trim()} title="Add">
-            <i className="bi bi-plus-lg"></i>
+          <button className="btn btn-send" onClick={addNew} disabled={!newText.trim()} title="Add" aria-label="Add">
+            <i className="bi bi-plus-lg" aria-hidden="true"></i>
           </button>
         </div>
 
         {todos.length === 0 && (
           <div className="empty-state">
-            <i className="bi bi-check2-square"></i>
+            <i className="bi bi-check2-square" aria-hidden="true"></i>
             <p>Nothing to do — add a task, or ask Sprout to plan your week.</p>
             {/* No icon on purpose: .empty-state i is the big 2.6rem glyph. */}
             <button
@@ -182,26 +185,32 @@ function TodosView({ onNavigate }) {
         {sortTodos(todos).map((t) => {
           const urgent = isTodoUrgent(t);
           return (
-            <div key={t.id} className={t.done ? "todo-row done" : "todo-row"}>
-              <button className="todo-check" onClick={() => toggle(t)} title={t.done ? "Mark not done" : "Check off"}>
-                <i className={t.done ? "bi bi-check-square-fill" : "bi bi-square"}></i>
+            <div key={t.id} role="listitem" className={t.done ? "todo-row done" : "todo-row"}>
+              <button
+                className="todo-check"
+                onClick={() => toggle(t)}
+                title={t.done ? "Mark not done" : "Check off"}
+                aria-label={t.done ? "Mark not done" : "Check off"}
+                aria-pressed={t.done}
+              >
+                <i className={t.done ? "bi bi-check-square-fill" : "bi bi-square"} aria-hidden="true"></i>
               </button>
               <div className="todo-text">
                 <span className="todo-title">
                   {t.text}
                   {t.dueDate && (
                     <span className={urgent ? "todo-due overdue" : "todo-due"}>
-                      <i className="bi bi-calendar-event"></i> {todoDueLabel(t.dueDate)}
+                      <i className="bi bi-calendar-event" aria-hidden="true"></i> {todoDueLabel(t.dueDate)}
                     </span>
                   )}
                 </span>
                 {t.notes && <span className="todo-notes">{t.notes}</span>}
               </div>
-              <button className="icon-btn small" onClick={() => setEditTarget(t)} title="Edit">
-                <i className="bi bi-pencil"></i>
+              <button className="icon-btn small" onClick={() => setEditTarget(t)} title="Edit" aria-label="Edit">
+                <i className="bi bi-pencil" aria-hidden="true"></i>
               </button>
-              <button className="icon-btn small" onClick={() => setDeleteTarget(t)} title="Delete">
-                <i className="bi bi-trash"></i>
+              <button className="icon-btn small" onClick={() => setDeleteTarget(t)} title="Delete" aria-label="Delete">
+                <i className="bi bi-trash" aria-hidden="true"></i>
               </button>
             </div>
           );

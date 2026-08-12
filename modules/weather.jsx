@@ -454,6 +454,7 @@ function WeatherSetupModal({ onClose, onSaved }) {
   const [error, setError] = useState("");
   const [lat, setLat] = useState(current.lat === null ? "" : String(current.lat));
   const [lon, setLon] = useState(current.lon === null ? "" : String(current.lon));
+  useEscapeKey(onClose);
 
   function finish(next) {
     const saved = setWeatherSettings(next);
@@ -531,15 +532,15 @@ function WeatherSetupModal({ onClose, onSaved }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Local weather</h2>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="weather-setup-modal-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="weather-setup-modal-title">Local weather</h2>
         <p className="weather-setup-intro">
           Used for the forecast strip — and given to Sprout, so its watering and spraying advice
           follows your actual weather.
         </p>
 
         <button className="btn btn-block" onClick={locateMe} disabled={locating}>
-          <i className="bi bi-crosshair"></i> {locating ? "Locating…" : "Use my location"}
+          <i className="bi bi-crosshair" aria-hidden="true"></i> {locating ? "Locating…" : "Use my location"}
         </button>
 
         <label>
@@ -551,8 +552,8 @@ function WeatherSetupModal({ onClose, onSaved }) {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && searchPlaces()}
             />
-            <button className="btn small" onClick={searchPlaces} disabled={!query.trim() || searching}>
-              <i className={searching ? "bi bi-hourglass-split" : "bi bi-search"}></i>
+            <button className="btn small" onClick={searchPlaces} disabled={!query.trim() || searching} aria-label="Search">
+              <i className={searching ? "bi bi-hourglass-split" : "bi bi-search"} aria-hidden="true"></i>
             </button>
           </div>
         </label>
@@ -567,14 +568,14 @@ function WeatherSetupModal({ onClose, onSaved }) {
                   finish({ enabled: true, lat: r.latitude, lon: r.longitude, place: weatherPlaceLabel(r) })
                 }
               >
-                <i className="bi bi-geo-alt"></i>
+                <i className="bi bi-geo-alt" aria-hidden="true"></i>
                 <span>{weatherPlaceLabel(r)}</span>
               </button>
             ))}
           </div>
         )}
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
 
         <hr />
 
@@ -646,12 +647,12 @@ function WeatherStrip({ compact }) {
     return (
       <React.Fragment>
         <button className={compact ? "weather-strip weather-prompt compact" : "weather-strip weather-prompt"} onClick={() => setSetupOpen(true)}>
-          <i className="bi bi-cloud-sun weather-icon"></i>
+          <i className="bi bi-cloud-sun weather-icon" aria-hidden="true"></i>
           <span className="weather-prompt-text">
             <strong>Turn on local weather</strong>
             <em>Rain, frost and heat warnings — and Sprout's advice follows them.</em>
           </span>
-          <i className="bi bi-chevron-right"></i>
+          <i className="bi bi-chevron-right" aria-hidden="true"></i>
         </button>
         {setup}
       </React.Fragment>
@@ -660,8 +661,8 @@ function WeatherStrip({ compact }) {
 
   if (loading && !data) {
     return (
-      <div className={compact ? "weather-strip compact" : "weather-strip"}>
-        <i className="bi bi-cloud weather-icon"></i>
+      <div className={compact ? "weather-strip compact" : "weather-strip"} role="status" aria-live="polite">
+        <i className="bi bi-cloud weather-icon" aria-hidden="true"></i>
         <div className="weather-main"><span className="weather-cond">Loading weather…</span></div>
       </div>
     );
@@ -671,12 +672,12 @@ function WeatherStrip({ compact }) {
     return (
       <React.Fragment>
         <div className={compact ? "weather-strip compact" : "weather-strip"}>
-          <i className="bi bi-cloud-slash weather-icon"></i>
+          <i className="bi bi-cloud-slash weather-icon" aria-hidden="true"></i>
           <div className="weather-main">
             <span className="weather-cond">Weather unavailable offline</span>
           </div>
-          <button className="icon-btn small" title="Weather location" onClick={() => setSetupOpen(true)}>
-            <i className="bi bi-gear"></i>
+          <button className="icon-btn small" title="Weather location" aria-label="Weather location" onClick={() => setSetupOpen(true)}>
+            <i className="bi bi-gear" aria-hidden="true"></i>
           </button>
         </div>
         {setup}
@@ -701,7 +702,7 @@ function WeatherStrip({ compact }) {
   return (
     <React.Fragment>
       <div className={compact ? "weather-strip compact" : "weather-strip"}>
-        <i className={`bi ${cond.icon} weather-icon`}></i>
+        <i className={`bi ${cond.icon} weather-icon`} aria-hidden="true"></i>
         <div className="weather-main">
           <span className="weather-temp">
             {formatWeatherTemp(data.current ? data.current.temp : null, units)}
@@ -710,32 +711,32 @@ function WeatherStrip({ compact }) {
         </div>
         <div className="weather-meta">
           <span>
-            <i className="bi bi-thermometer-half"></i> {formatWeatherTemp(today.tempMax, units)} /{" "}
+            <i className="bi bi-thermometer-half" aria-hidden="true"></i> {formatWeatherTemp(today.tempMax, units)} /{" "}
             {formatWeatherTemp(today.tempMin, units)}
           </span>
           <span>
-            <i className="bi bi-umbrella"></i>{" "}
+            <i className="bi bi-umbrella" aria-hidden="true"></i>{" "}
             {today.rainChance === null ? formatWeatherRain(today.rainMm, units) : `${Math.round(today.rainChance)}%`}
           </span>
           {!compact && data.place && (
             <span className="weather-place">
-              <i className="bi bi-geo-alt"></i> {data.place}
+              <i className="bi bi-geo-alt" aria-hidden="true"></i> {data.place}
             </span>
           )}
         </div>
         {warning && (
           <span className="weather-warn">
-            <i className={`bi ${warning.icon}`}></i> {warning.text}
+            <i className={`bi ${warning.icon}`} aria-hidden="true"></i> {warning.text}
           </span>
         )}
         {!compact && (
-          <button className="icon-btn small" title="Weather location" onClick={() => setSetupOpen(true)}>
-            <i className="bi bi-gear"></i>
+          <button className="icon-btn small" title="Weather location" aria-label="Weather location" onClick={() => setSetupOpen(true)}>
+            <i className="bi bi-gear" aria-hidden="true"></i>
           </button>
         )}
       </div>
       {data.stale && !compact && (
-        <p className="weather-stale">
+        <p className="weather-stale" role="status" aria-live="polite">
           Saved copy from {weatherAgeLabel(data.fetchedAt)} — couldn't reach the forecast.
         </p>
       )}

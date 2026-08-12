@@ -186,33 +186,35 @@ function App() {
             className={view === "today" ? "icon-btn active" : "icon-btn"}
             onClick={() => navigate(view === "today" ? "chat" : "today")}
             title="Today"
+            aria-label="Today"
+            aria-pressed={view === "today"}
           >
-            <i className="bi bi-sun"></i>
+            <i className="bi bi-sun" aria-hidden="true"></i>
           </button>
           {view === "chat" && (
-            <button className="icon-btn" onClick={() => setShowChatList(true)} title="Chats">
-              <i className="bi bi-chat-square-text"></i>
+            <button className="icon-btn" onClick={() => setShowChatList(true)} title="Chats" aria-label="Chats">
+              <i className="bi bi-chat-square-text" aria-hidden="true"></i>
             </button>
           )}
           {view === "chat" && (
-            <button className="icon-btn" onClick={refreshAiContext} title="Refresh what Sprout can see">
-              <i className="bi bi-arrow-repeat"></i>
+            <button className="icon-btn" onClick={refreshAiContext} title="Refresh what Sprout can see" aria-label="Refresh what Sprout can see">
+              <i className="bi bi-arrow-repeat" aria-hidden="true"></i>
             </button>
           )}
         </div>
         <span className="app-title">
-          <i className="bi bi-flower1"></i>
+          <i className="bi bi-flower1" aria-hidden="true"></i>
           <span>
             Garden Companion
             {view === "chat" && activeChat && <em className="app-subtitle">{activeChat.title}</em>}
           </span>
         </span>
         <div className="header-side right">
-          <button className="icon-btn" onClick={() => setShowSearch(true)} title="Search everything">
-            <i className="bi bi-search"></i>
+          <button className="icon-btn" onClick={() => setShowSearch(true)} title="Search everything" aria-label="Search everything">
+            <i className="bi bi-search" aria-hidden="true"></i>
           </button>
-          <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
-            <i className="bi bi-gear"></i>
+          <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings" aria-label="Settings">
+            <i className="bi bi-gear" aria-hidden="true"></i>
           </button>
         </div>
       </header>

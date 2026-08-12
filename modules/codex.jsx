@@ -44,7 +44,7 @@ function CodexKindBadge({ entry }) {
   const icon = entry.kind === "plant" ? "bi-flower3" : "bi-tools";
   return (
     <span className="codex-kind">
-      <i className={`bi ${icon}`}></i> {entry.kind}
+      <i className={`bi ${icon}`} aria-hidden="true"></i> {entry.kind}
       {entry.auto ? " · auto" : ""}
     </span>
   );
@@ -128,35 +128,36 @@ function CodexView({ initialQuery, onNavigate }) {
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <h2><i className="bi bi-book"></i> Codex</h2>
+        <h2><i className="bi bi-book" aria-hidden="true"></i> Codex</h2>
       </div>
       <div className="codex-search-row">
         <input
           className="text-input"
           placeholder="Search plants, pests, topics…"
+          aria-label="Search the codex"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && nothingFound && deepSearch()}
         />
-        <button className="icon-btn" title="In-depth AI search" onClick={deepSearch} disabled={!query.trim() || aiLoading}>
-          <i className={aiLoading ? "bi bi-hourglass-split" : "bi bi-search-heart"}></i>
+        <button className="icon-btn" title="In-depth AI search" aria-label="In-depth AI search" onClick={deepSearch} disabled={!query.trim() || aiLoading}>
+          <i className={aiLoading ? "bi bi-hourglass-split" : "bi bi-search-heart"} aria-hidden="true"></i>
         </button>
       </div>
       <div className="codex-list">
-        {aiLoading && <p className="empty-hint">Searching in depth…</p>}
-        {aiError && <div className="error-banner">{aiError}</div>}
+        {aiLoading && <p className="empty-hint" role="status" aria-live="polite">Searching in depth…</p>}
+        {aiError && <div className="error-banner" role="alert">{aiError}</div>}
         {aiResult && (
-          <div className="codex-entry ai-result">
+          <div className="codex-entry ai-result" role="status" aria-live="polite">
             <h3>{aiResult.term} <span className="item-card-sub">(AI deep search)</span></h3>
             <div dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(aiResult.body) }} />
             <CodexSources sources={aiResult.sources} />
             <div className="codex-entry-actions">
               <button className="btn small" onClick={saveResult} disabled={!!aiResult.savedId}>
-                <i className={aiResult.savedId ? "bi bi-check2" : "bi bi-bookmark-plus"}></i>{" "}
+                <i className={aiResult.savedId ? "bi bi-check2" : "bi bi-bookmark-plus"} aria-hidden="true"></i>{" "}
                 {aiResult.savedId ? "Saved" : "Save to Codex"}
               </button>
               <button className="btn btn-ghost small" onClick={() => askSprout(aiResult.term)}>
-                <i className="bi bi-chat-dots"></i> Ask Sprout
+                <i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout
               </button>
             </div>
           </div>
@@ -172,10 +173,10 @@ function CodexView({ initialQuery, onNavigate }) {
             <CodexSources sources={e.sources} />
             <div className="codex-entry-actions">
               <button className="btn btn-ghost small" onClick={() => askSprout(e.title)}>
-                <i className="bi bi-chat-dots"></i> Ask Sprout
+                <i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout
               </button>
-              <button className="icon-btn small" title="Delete entry" onClick={() => setDeleteTarget(e)}>
-                <i className="bi bi-trash"></i>
+              <button className="icon-btn small" title="Delete entry" aria-label="Delete entry" onClick={() => setDeleteTarget(e)}>
+                <i className="bi bi-trash" aria-hidden="true"></i>
               </button>
             </div>
           </div>
@@ -190,7 +191,7 @@ function CodexView({ initialQuery, onNavigate }) {
             <p>{e.body}</p>
             <div className="codex-entry-actions">
               <button className="btn btn-ghost small" onClick={() => askSprout(e.title)}>
-                <i className="bi bi-chat-dots"></i> Ask Sprout
+                <i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout
               </button>
             </div>
           </div>
@@ -198,9 +199,9 @@ function CodexView({ initialQuery, onNavigate }) {
 
         {nothingFound && !aiResult && !aiLoading && (
           <div className="empty-state">
-            <i className="bi bi-book"></i>
+            <i className="bi bi-book" aria-hidden="true"></i>
             <p>
-              No matches in the library — tap <i className="bi bi-search-heart"></i> above for an
+              No matches in the library — tap <i className="bi bi-search-heart" aria-hidden="true"></i> above for an
               in-depth AI search with sources.
             </p>
           </div>

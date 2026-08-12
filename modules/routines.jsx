@@ -40,6 +40,7 @@ function AddRoutineModal({ onClose, onAdded }) {
   const [plants, setPlants] = useState([]);
   const [link, setLink] = useState({ plantId: null, careAction: "" });
   const [tags, setTags] = useState([]);
+  useEscapeKey(onClose);
 
   useEffect(() => {
     getAllPlants().then(setPlants);
@@ -59,11 +60,11 @@ function AddRoutineModal({ onClose, onAdded }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Add routine</h2>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="add-routine-modal-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="add-routine-modal-title">Add routine</h2>
         <label>
           Task
-          <input value={task} onChange={(e) => setTask(e.target.value)} placeholder="e.g. Water tomatoes" />
+          <input autoFocus value={task} onChange={(e) => setTask(e.target.value)} placeholder="e.g. Water tomatoes" />
         </label>
         <label>
           Repeat every (days)
@@ -98,6 +99,8 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
   const [lightbox, setLightbox] = useState(false);
   const [plants, setPlants] = useState([]);
   const [form, setForm] = useState(routineFormFrom(routine));
+  // Unconditional (rules of hooks) — only closes anything while editing is open.
+  useEscapeKey(() => editing && setEditing(false));
 
   useEffect(() => {
     getAllPlants().then(setPlants);
@@ -134,7 +137,7 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <button className="icon-btn" onClick={onBack}><i className="bi bi-arrow-left"></i></button>
+        <button className="icon-btn" onClick={onBack} aria-label="Back"><i className="bi bi-arrow-left" aria-hidden="true"></i></button>
         <h2>{routine.task || "Untitled routine"}</h2>
         <button
           className="icon-btn"
@@ -143,8 +146,9 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
             setEditing(true);
           }}
           title="Edit"
+          aria-label="Edit"
         >
-          <i className="bi bi-pencil"></i>
+          <i className="bi bi-pencil" aria-hidden="true"></i>
         </button>
       </div>
 
@@ -155,9 +159,9 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
           </button>
         )}
         <div className="fact-chips">
-          <span className="chip"><i className="bi bi-arrow-repeat"></i> every {routine.intervalDays} day{routine.intervalDays === 1 ? "" : "s"}</span>
-          <span className="chip"><i className="bi bi-check2-circle"></i> {routine.lastDone ? `done ${timeAgo(routine.lastDone)}` : "never done"}</span>
-          {due && <span className="chip due"><i className="bi bi-exclamation-circle"></i> Due now</span>}
+          <span className="chip"><i className="bi bi-arrow-repeat" aria-hidden="true"></i> every {routine.intervalDays} day{routine.intervalDays === 1 ? "" : "s"}</span>
+          <span className="chip"><i className="bi bi-check2-circle" aria-hidden="true"></i> {routine.lastDone ? `done ${timeAgo(routine.lastDone)}` : "never done"}</span>
+          {due && <span className="chip due"><i className="bi bi-exclamation-circle" aria-hidden="true"></i> Due now</span>}
           <TagChips tags={routine.tags} />
         </div>
 
@@ -165,20 +169,20 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
           <div className="linked-section">
             <h3>Linked plant</h3>
             <button className="linked-row" onClick={() => onNavigate("garden", { itemId: linkedPlant.id })}>
-              <i className="bi bi-flower3"></i>
+              <i className="bi bi-flower3" aria-hidden="true"></i>
               <span>{linkedPlant.name}</span>
               {routine.careAction && (
                 <span className="linked-sub">
                   marks {routine.careAction === "water" ? "watered" : "fertilized"} when done
                 </span>
               )}
-              <i className="bi bi-chevron-right"></i>
+              <i className="bi bi-chevron-right" aria-hidden="true"></i>
             </button>
           </div>
         )}
 
         <div className="item-quick-actions">
-          <button className="btn small" onClick={markDone}><i className="bi bi-check2"></i> Mark done</button>
+          <button className="btn small" onClick={markDone}><i className="bi bi-check2" aria-hidden="true"></i> Mark done</button>
           <button className="btn btn-danger small" onClick={() => setConfirmDelete(true)}>Delete</button>
         </div>
       </div>
@@ -199,11 +203,11 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
 
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>Edit routine</h2>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-routine-modal-title" onClick={(e) => e.stopPropagation()}>
+            <h2 id="edit-routine-modal-title">Edit routine</h2>
             <label>
               Task
-              <input value={form.task} onChange={(e) => setForm({ ...form, task: e.target.value })} />
+              <input autoFocus value={form.task} onChange={(e) => setForm({ ...form, task: e.target.value })} />
             </label>
             <label>
               Repeat every (days)
@@ -261,14 +265,14 @@ function RoutinesView({ initialId, onNavigate }) {
   return (
     <div className="tab-panel">
       <div className="view-header">
-        <h2><i className="bi bi-arrow-repeat"></i> Routines</h2>
-        <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add routine"><i className="bi bi-plus-lg"></i></button>
+        <h2><i className="bi bi-arrow-repeat" aria-hidden="true"></i> Routines</h2>
+        <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add routine" aria-label="Add routine"><i className="bi bi-plus-lg" aria-hidden="true"></i></button>
       </div>
       <TagFilterBar items={routines} activeTag={activeTag} onSelect={setActiveTag} />
       <div className="item-grid">
         {routines.length === 0 && (
           <div className="empty-state">
-            <i className="bi bi-arrow-repeat"></i>
+            <i className="bi bi-arrow-repeat" aria-hidden="true"></i>
             <p>No routines yet — tap + to add a recurring task, or ask Sprout to set one up.</p>
           </div>
         )}
@@ -282,7 +286,7 @@ function RoutinesView({ initialId, onNavigate }) {
               {r.photoThumb ? (
                 <img src={r.photoThumb} alt={r.task} />
               ) : (
-                <div className="item-card-placeholder"><i className="bi bi-arrow-repeat"></i></div>
+                <div className="item-card-placeholder"><i className="bi bi-arrow-repeat" aria-hidden="true"></i></div>
               )}
               <span className="item-card-title">{r.task || "Untitled routine"}</span>
               <span className="item-card-sub">

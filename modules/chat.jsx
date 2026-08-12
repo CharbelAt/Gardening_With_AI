@@ -12,7 +12,7 @@ function FollowupChips({ suggestions, onPick, disabled }) {
     <div className="followup-chips">
       {suggestions.map((s, i) => (
         <button key={i} className="followup-chip" onClick={() => onPick(s)} disabled={disabled}>
-          <i className="bi bi-arrow-return-right"></i> {s}
+          <i className="bi bi-arrow-return-right" aria-hidden="true"></i> {s}
         </button>
       ))}
     </div>
@@ -237,7 +237,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
       <div className="messages">
         {messages.length === 0 && (
           <div className="empty-state">
-            <i className="bi bi-flower1"></i>
+            <i className="bi bi-flower1" aria-hidden="true"></i>
             <p>Ask a gardening question or send a photo of a plant to get started.</p>
             <p className="empty-sub">Sprout knows your garden — try "what should I do today?"</p>
           </div>
@@ -267,19 +267,20 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         )}
         <div ref={scrollRef} />
       </div>
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
       {appliedNote && (
-        <div className="applied-banner">
-          <i className="bi bi-check2-circle"></i> {appliedNote}
+        <div className="applied-banner" role="status" aria-live="polite">
+          <i className="bi bi-check2-circle" aria-hidden="true"></i> {appliedNote}
         </div>
       )}
       <PendingActionsBanner actions={pendingActions} onResolve={setPendingActions} />
       {pendingPhoto && (
         <div className="photo-preview">
-          <img src={pendingPhoto.dataUrl} alt="" />
+          <img src={pendingPhoto.dataUrl} alt="Photo to send" />
           <textarea
             rows={2}
             value={pendingPhoto.caption}
+            aria-label="Caption for this photo"
             onChange={(e) => setPendingPhoto({ ...pendingPhoto, caption: e.target.value })}
             placeholder="Ask something about this photo…"
           />
@@ -294,18 +295,20 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         <button
           className="icon-btn"
           title="Take a photo"
+          aria-label="Take a photo"
           onClick={() => cameraInputRef.current.click()}
           disabled={busy}
         >
-          <i className="bi bi-camera"></i>
+          <i className="bi bi-camera" aria-hidden="true"></i>
         </button>
         <button
           className="icon-btn"
           title="Photo from gallery"
+          aria-label="Photo from gallery"
           onClick={() => fileInputRef.current.click()}
           disabled={busy}
         >
-          <i className="bi bi-images"></i>
+          <i className="bi bi-images" aria-hidden="true"></i>
         </button>
         <input
           ref={cameraInputRef}
@@ -327,6 +330,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           className="text-input"
           type="text"
           placeholder="Ask Sprout something…"
+          aria-label="Message"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && sendText()}
@@ -338,8 +342,8 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           onStateChange={setVoice}
           disabled={busy}
         />
-        <button className="btn btn-send" onClick={sendText} disabled={busy || !input.trim()} title="Send">
-          <i className="bi bi-send-fill"></i>
+        <button className="btn btn-send" onClick={sendText} disabled={busy || !input.trim()} title="Send" aria-label="Send">
+          <i className="bi bi-send-fill" aria-hidden="true"></i>
         </button>
       </div>
     </div>

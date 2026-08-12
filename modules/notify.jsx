@@ -252,9 +252,9 @@ function NotifySettingsSection() {
         onClick={sendTest}
         disabled={testing || !notificationsSupported() || permission === "denied"}
       >
-        <i className="bi bi-bell"></i> {testing ? "Sending…" : "Send a test notification"}
+        <i className="bi bi-bell" aria-hidden="true"></i> {testing ? "Sending…" : "Send a test notification"}
       </button>
-      {testMsg && <p className="hint notify-status">{testMsg}</p>}
+      {testMsg && <p className="hint notify-status" role="status" aria-live="polite">{testMsg}</p>}
 
       <p className="hint">
         Honest limitation: this can only notify you while Garden Companion is open in a browser

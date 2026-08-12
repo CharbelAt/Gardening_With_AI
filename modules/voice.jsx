@@ -105,8 +105,10 @@ function VoiceListeningBar({ state, seconds, hint, live }) {
   if (!listening && !transcribing && !hint) return null;
   const kind = listening ? "listening" : transcribing ? "transcribing" : "hint";
   const liveText = listening ? String(live || "").trim() : "";
+  // role=status: screen readers should hear "Listening…"/"Transcribing…" and
+  // the live transcript as it updates, without needing focus moved here.
   return (
-    <div className={`listening-bar ${kind}`}>
+    <div className={`listening-bar ${kind}`} role="status" aria-live="polite">
       <span className="listening-dot"></span>
       <span className="listening-text">
         {listening ? (
@@ -566,6 +568,7 @@ function VoiceButton({ onTranscript, onError, onStateChange, disabled }) {
             ? "bi bi-stop-fill"
             : "bi bi-mic-fill"
         }
+        aria-hidden="true"
       ></i>
     </button>
   );
