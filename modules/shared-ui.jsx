@@ -56,11 +56,216 @@ function ImageLightbox({ src, caption, onClose }) {
   );
 }
 
+// FEATURE 2 (weather entry point): weather.jsx owns settings/UI/fetching —
+// this is just the missing "way in" that file's own header comment calls
+// out ("no other way in until the orchestrator wires a Settings entry").
+// Kept deliberately tiny; WeatherSetupModal does the real work and hands
+// back the settings it just saved via onSaved (same convention WeatherStrip
+// uses), so there's no need to re-read localStorage here after a save.
+function SettingsWeatherRow() {
+  const [weather, setWeather] = useState(() =>
+    typeof getWeatherSettings === "function" ? getWeatherSettings() : { enabled: false, place: "" }
+  );
+  const [showSetup, setShowSetup] = useState(false);
+  const label = weather.enabled && weather.place ? weather.place : "Off";
+
+  return (
+    <React.Fragment>
+      <hr />
+      <p className="hint">Local weather: {label}</p>
+      <button className="btn btn-ghost btn-block" onClick={() => setShowSetup(true)}>
+        <i className="bi bi-cloud-sun"></i> {weather.enabled ? "Change location" : "Set up local weather"}
+      </button>
+      {showSetup && typeof WeatherSetupModal === "function" && (
+        <WeatherSetupModal
+          onClose={() => setShowSetup(false)}
+          onSaved={(saved) => {
+            setWeather(saved);
+            setShowSetup(false);
+          }}
+        />
+      )}
+    </React.Fragment>
+  );
+}
+
+// FEATURE 1 (backup & restore UI). exportAllData()/importAllData(data, mode)
+// live in idb.js (built alongside this file) and are guarded with typeof so
+// a load-order hiccup shows a message instead of crashing the whole Settings
+// modal. importAllData's returned shape and rejection behavior are documented
+// right above it in idb.js: resolves { imported: {store: count}, skipped,
+// mode }, rejects with a readable Error on a malformed file.
+function SettingsBackupSection({ onCleared }) {
+  const fileInputRef = useRef(null);
+
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState("");
+  const [exportErr, setExportErr] = useState("");
+
+  const [pendingData, setPendingData] = useState(null); // parsed backup JSON, held until the user picks a mode (or cancels)
+  const [importStep, setImportStep] = useState(null); // null | "choose" | "confirmReplace"
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState("");
+  const [importErr, setImportErr] = useState("");
+
+  async function handleExport() {
+    setExportErr("");
+    setExportMsg("");
+    if (typeof exportAllData !== "function") {
+      setExportErr("Export isn't available yet — try again in a moment.");
+      return;
+    }
+    setExporting(true); // exports include base64 photos and can run tens of MB, so this isn't instant
+    try {
+      const data = await exportAllData();
+      const json = JSON.stringify(data);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `garden-companion-backup-${todayISO()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url); // release the blob now that the download has started
+      setExportMsg(`Saved — ${(blob.size / (1024 * 1024)).toFixed(1)} MB.`);
+    } catch (e) {
+      setExportErr(e && e.message ? e.message : "Export failed.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  function onFileChosen(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // reset so re-picking the same filename still fires onChange next time
+    if (!file) return;
+    setImportErr("");
+    setImportMsg("");
+    const reader = new FileReader();
+    reader.onerror = () => setImportErr("Couldn't read that file.");
+    reader.onload = () => {
+      try {
+        setPendingData(JSON.parse(reader.result));
+        setImportStep("choose");
+      } catch (_) {
+        setImportErr("That doesn't look like a backup file (couldn't parse it as JSON).");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function cancelImport() {
+    setImportStep(null);
+    setPendingData(null);
+  }
+
+  async function runImport(mode) {
+    const data = pendingData;
+    setImportStep(null);
+    setPendingData(null);
+    if (!data) return;
+    setImportErr("");
+    setImportMsg("");
+    if (typeof importAllData !== "function") {
+      setImportErr("Restoring a backup isn't available yet — try again in a moment.");
+      return;
+    }
+    setImporting(true);
+    try {
+      const result = (await importAllData(data, mode)) || {};
+      const counts = Object.entries(result.imported || {})
+        .map(([store, n]) => `${n} ${store}`)
+        .join(", ");
+      const skippedNote = (result.skipped || []).length ? ` Skipped: ${result.skipped.join(", ")}.` : "";
+      setImportMsg(`Restored (${mode}): ${counts || "nothing new"}.${skippedNote}`);
+      // The rest of the app (chats, messages, nav badges) was already loaded
+      // from IndexedDB before this import ran, so that in-memory state is now
+      // stale either way — Replace may have deleted what it pointed at, Merge
+      // added things it doesn't know about. onCleared() is the same "re-read
+      // everything and land on a fresh default chat" routine "Clear all data"
+      // below already uses, which is exactly what's needed here too.
+      onCleared();
+    } catch (e) {
+      setImportErr(e && e.message ? e.message : "Import failed.");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  return (
+    <React.Fragment>
+      <hr />
+      <h3 className="backup-section-title">Backup</h3>
+      <p className="hint">
+        Everything is stored only in this browser — a backup file you save yourself is the only
+        protection against losing it (new device, cleared browser data, uninstalling the app, etc.).
+      </p>
+
+      <div className="backup-row">
+        <button className="btn btn-ghost" onClick={handleExport} disabled={exporting}>
+          <i className="bi bi-download"></i> {exporting ? "Exporting…" : "Export backup"}
+        </button>
+        <button className="btn btn-ghost" onClick={() => fileInputRef.current.click()} disabled={importing}>
+          <i className="bi bi-upload"></i> {importing ? "Restoring…" : "Import backup"}
+        </button>
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json,.json"
+        style={{ display: "none" }}
+        onChange={onFileChosen}
+      />
+
+      {exportMsg && <p className="hint backup-status">{exportMsg}</p>}
+      {exportErr && <p className="hint backup-status error">{exportErr}</p>}
+      {importMsg && <p className="hint backup-status">{importMsg}</p>}
+      {importErr && <p className="hint backup-status error">{importErr}</p>}
+
+      {importStep === "choose" && (
+        <div className="modal-backdrop" onClick={cancelImport}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Restore this backup?</h2>
+            <div className="backup-mode-option">
+              <strong>Replace</strong>
+              <p>Deletes everything currently on this device and restores the backup exactly.</p>
+            </div>
+            <div className="backup-mode-option">
+              <strong>Merge</strong>
+              <p>Keeps what you have and adds the backup's items alongside it.</p>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-danger" onClick={() => setImportStep("confirmReplace")}>Replace</button>
+              <button className="btn" onClick={() => runImport("merge")}>Merge</button>
+            </div>
+            <button className="btn btn-ghost btn-block" onClick={cancelImport}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {importStep === "confirmReplace" && (
+        // Second confirmation for the destructive path, per spec — reusing
+        // ConfirmModal (danger-styled) rather than hand-rolling another dialog.
+        <ConfirmModal
+          title="Replace everything on this device?"
+          message="This deletes everything currently on this device — chats, plants, tools, routines, to-dos, and codex entries — and restores the backup exactly. This can't be undone."
+          confirmLabel="Replace everything"
+          danger
+          onConfirm={() => runImport("replace")}
+          onCancel={() => setImportStep("choose")}
+        />
+      )}
+    </React.Fragment>
+  );
+}
+
 function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange }) {
   const [apiBase, setApiBase] = useState(getSettings().apiBase);
   const [secret, setSecret] = useState(getSettings().secret);
   const [writeMode, setWriteMode] = useState(getAiWriteMode());
   const [defaultLocation, setDefaultLocation] = useState(getDefaultLocation());
+  const [landingView, setLandingView] = useState(localStorage.getItem(LS_LANDING_VIEW) || "chat");
   const [confirmClear, setConfirmClear] = useState(false);
 
   function save() {
@@ -68,6 +273,7 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
     localStorage.setItem(LS_SECRET, secret.trim());
     localStorage.setItem(LS_AI_WRITE_MODE, writeMode);
     localStorage.setItem(LS_DEFAULT_LOCATION, defaultLocation.trim());
+    localStorage.setItem(LS_LANDING_VIEW, landingView);
     onClose();
   }
 
@@ -123,6 +329,13 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
           </select>
         </label>
         <label>
+          Open the app on
+          <select value={landingView} onChange={(e) => setLandingView(e.target.value)}>
+            <option value="chat">Chat</option>
+            <option value="today">Today</option>
+          </select>
+        </label>
+        <label>
           Default plant location
           <input
             type="text"
@@ -135,6 +348,13 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
           <button className="btn" onClick={save}>Save</button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         </div>
+
+        <SettingsWeatherRow />
+
+        <SettingsBackupSection onCleared={onCleared} />
+
+        {typeof NotifySettingsSection === "function" && <NotifySettingsSection />}
+
         <hr />
         <button className="btn btn-ghost btn-block" onClick={onShowHelp}>
           <i className="bi bi-question-circle"></i> How to use Garden Companion

@@ -11,6 +11,7 @@ const LS_ACTIVE_CHAT = "gc_activeChatId";
 const LS_AI_WRITE_MODE = "gc_aiWriteMode"; // 'auto' | 'confirm'
 const LS_THEME = "gc_theme"; // 'dark' | 'light'
 const LS_DEFAULT_LOCATION = "gc_defaultLocation";
+const LS_LANDING_VIEW = "gc_landingView"; // "chat" (default) | "today"
 const CONTEXT_LIMIT = 24; // how many past messages get sent back to the AI as context — balance between context loss and free-tier token-per-minute budgets
 
 // Predefined tag sets per module. Users can also type any custom tag, and the
@@ -59,7 +60,9 @@ const SYSTEM_PROMPT_BASE =
   "When the detail doesn't change the answer, just answer. " +
   "NAMES: item names in the user's own garden data always refer to their own items — when a " +
   "name collides with a famous real-world company/brand/celebrity/place, the user's item wins " +
-  "unless they clearly mean the outside entity.";
+  "unless they clearly mean the outside entity. " +
+  "WEATHER: when a LOCAL WEATHER block is provided, let it drive watering, spraying and frost/" +
+  "heat advice instead of generic seasonal guidance.";
 
 // ---------- small formatting helpers ----------
 
@@ -352,6 +355,24 @@ async function syncCodexEntries(maxNew = 3) {
 }
 
 // ---------- AI context ----------
+
+// Local weather (weather.jsx) belongs in the AI's context, but that file loads
+// AFTER this one, so this file can't call into it. Inverted dependency: this
+// slot is declared here and weather.jsx assigns itself into it on load; it is
+// only ever CALLED at request time, by which point every script has run.
+// Stays null when weather.jsx isn't loaded — the context block is then simply
+// omitted, exactly as when the user has weather switched off.
+let weatherContextProvider = null;
+
+async function getWeatherContextBlock() {
+  if (typeof weatherContextProvider !== "function") return "";
+  try {
+    return (await weatherContextProvider()) || "";
+  } catch (e) {
+    console.error("weather context failed:", e && e.message);
+    return ""; // weather is a bonus — never let it break a chat request
+  }
+}
 
 // Bumped after every write (and by the manual refresh button) so anything
 // holding a snapshot can tell that it went stale. The number rides along in
@@ -831,7 +852,11 @@ async function buildContextMessages(history, mode) {
   // previous continuation round's writes and immediately before this request.
   // The device date lives in its header now, so it isn't repeated here.
   const knowledge = await buildKnowledgeContext();
-  const sys = SYSTEM_PROMPT_BASE + knowledge + ACTION_CONVENTIONS;
+  // Right after the garden snapshot: the same "here is what is actually true
+  // right now" material, and short enough to ride on every request. "" when
+  // the user has weather off or it couldn't be fetched.
+  const weather = await getWeatherContextBlock();
+  const sys = SYSTEM_PROMPT_BASE + knowledge + weather + ACTION_CONVENTIONS;
   const msgs = [{ role: "system", content: sys }];
   // Truncation is announced rather than silent — otherwise the model answers
   // confidently about turns it can no longer see.

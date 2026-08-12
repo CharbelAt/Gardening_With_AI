@@ -60,6 +60,114 @@ function plantFormFrom(plant) {
   };
 }
 
+// Photo timeline compare: pick any two entries from the plant's photo history
+// and wipe between them. Additive — the history log itself is untouched.
+//
+// The two images are stacked in the same fixed box and the top one is revealed
+// with clip-path rather than by resizing it. That's what keeps the wipe honest:
+// both photos stay at identical size and position, so the divider lands on the
+// same point of the plant in each, with no width measuring and no ref.
+function PhotoCompareOverlay({ plant, photos, onClose }) {
+  const [beforeIdx, setBeforeIdx] = useState(0);
+  const [afterIdx, setAfterIdx] = useState(photos.length - 1);
+  const [reveal, setReveal] = useState(50); // % of the frame showing the "before" photo
+  const [lightbox, setLightbox] = useState(null); // { src, caption }
+
+  if (!photos || photos.length < 2) return null; // nothing to compare against
+
+  const before = photos[beforeIdx] || photos[0];
+  const after = photos[afterIdx] || photos[photos.length - 1];
+  const dateLabel = (p) => (p && p.date ? new Date(p.date).toLocaleDateString() : "undated");
+  // Absolute, so picking a later "before" than "after" still reads sensibly.
+  const daysApart =
+    before.date && after.date
+      ? Math.round(Math.abs(after.date - before.date) / (24 * 60 * 60 * 1000))
+      : null;
+
+  return (
+    <React.Fragment>
+      <div className="modal-backdrop" onClick={onClose}>
+        <div className="modal compare-modal" onClick={(e) => e.stopPropagation()}>
+          <h2>Compare photos</h2>
+
+          <div className="compare-stage">
+            <img className="compare-img" src={after.imageThumb} alt="" />
+            <img
+              className="compare-img compare-img-before"
+              style={{ clipPath: `inset(0 ${100 - reveal}% 0 0)` }}
+              src={before.imageThumb}
+              alt=""
+            />
+            <div className="compare-divider" style={{ left: `${reveal}%` }}></div>
+            <span className="compare-tag left">{dateLabel(before)}</span>
+            <span className="compare-tag right">{dateLabel(after)}</span>
+            <input
+              className="compare-range"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={reveal}
+              onChange={(e) => setReveal(Number(e.target.value))}
+              aria-label="Wipe between the two photos"
+            />
+          </div>
+
+          <p className="compare-meta">
+            <i className="bi bi-arrow-left-right"></i>{" "}
+            {daysApart === null
+              ? "these entries have no dates"
+              : daysApart === 0
+              ? "same day"
+              : `${daysApart} ${daysApart === 1 ? "day" : "days"} apart`}
+          </p>
+
+          <div className="compare-pickers">
+            <label>
+              Before
+              <select value={beforeIdx} onChange={(e) => setBeforeIdx(Number(e.target.value))}>
+                {photos.map((p, i) => (
+                  <option key={i} value={i}>{dateLabel(p)}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              After
+              <select value={afterIdx} onChange={(e) => setAfterIdx(Number(e.target.value))}>
+                {photos.map((p, i) => (
+                  <option key={i} value={i}>{dateLabel(p)}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="modal-actions compare-actions">
+            <button
+              className="btn btn-ghost small"
+              onClick={() => setLightbox({ src: before.imageThumb, caption: `${dateLabel(before)} — ${before.analysis || plant.name}` })}
+            >
+              <i className="bi bi-arrows-fullscreen"></i> Before
+            </button>
+            <button
+              className="btn btn-ghost small"
+              onClick={() => setLightbox({ src: after.imageThumb, caption: `${dateLabel(after)} — ${after.analysis || plant.name}` })}
+            >
+              <i className="bi bi-arrows-fullscreen"></i> After
+            </button>
+            <button className="btn small" onClick={onClose}>Close</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Sibling of the backdrop, not a child: inside it, the lightbox's own
+          click-to-close would bubble up and shut the comparison too. */}
+      {lightbox && (
+        <ImageLightbox src={lightbox.src} caption={lightbox.caption} onClose={() => setLightbox(null)} />
+      )}
+    </React.Fragment>
+  );
+}
+
 function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -68,6 +176,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [linkedRoutines, setLinkedRoutines] = useState([]);
   const [lightbox, setLightbox] = useState(null); // { src, caption }
+  const [comparing, setComparing] = useState(false);
   const [form, setForm] = useState(plantFormFrom(plant));
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera
@@ -83,6 +192,13 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   // Cover (set by the AI via SET_COVER) wins over the newest gallery photo.
   const heroSrc = plant.coverThumb || (latestPhoto && latestPhoto.imageThumb) || null;
   const heroCaption = plant.coverThumb ? plant.name : latestPhoto && latestPhoto.analysis;
+  // Oldest → newest, so "before" and "after" default to the two ends of the
+  // timeline. Sorted rather than trusted: care marks and AI notes are appended
+  // to the same log, and an undated entry would otherwise land anywhere.
+  const photoEntries = (plant.photoHistory || [])
+    .filter((p) => p.imageThumb)
+    .slice()
+    .sort((a, b) => (a.date || 0) - (b.date || 0));
 
   async function saveForm() {
     await updatePlant({ ...plant, ...form, tags: normTags(form.tags) });
@@ -290,6 +406,11 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
         )}
 
         <h3>History</h3>
+        {photoEntries.length >= 2 && (
+          <button className="btn btn-ghost small compare-open" onClick={() => setComparing(true)}>
+            <i className="bi bi-layout-split"></i> Compare photos
+          </button>
+        )}
         {(!plant.photoHistory || plant.photoHistory.length === 0) && (
           <p className="empty-hint">No log entries yet — tap "Add photo" above to start one.</p>
         )}
@@ -319,6 +440,10 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
 
       {lightbox && (
         <ImageLightbox src={lightbox.src} caption={lightbox.caption} onClose={() => setLightbox(null)} />
+      )}
+
+      {comparing && (
+        <PhotoCompareOverlay plant={plant} photos={photoEntries} onClose={() => setComparing(false)} />
       )}
 
       {confirmDelete && (

@@ -35,6 +35,11 @@
      last (it references every view component). -->
 <script type="text/babel" data-presets="react" src="./modules/helpers.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/shared-ui.jsx"></script>
+<!-- weather.jsx registers its context provider into the slot helpers.jsx
+     declares, so it must load after helpers; today.jsx renders WeatherStrip,
+     so it must load after weather. -->
+<script type="text/babel" data-presets="react" src="./modules/weather.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/notify.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/chat.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/voice.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/inventory.jsx"></script>
@@ -42,6 +47,8 @@
 <script type="text/babel" data-presets="react" src="./modules/todos.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/garden.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/codex.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/search.jsx"></script>
+<script type="text/babel" data-presets="react" src="./modules/today.jsx"></script>
 <script type="text/babel" data-presets="react" src="./app.jsx"></script>
 
 <script>

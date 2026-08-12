@@ -338,3 +338,170 @@ function updatePlant(plant) {
 function clearAllPlants() {
   return clearStore(STORE_PLANTS);
 }
+
+// ---------- backup & restore (whole-database export / import) ----------
+//
+// Everything the app knows lives in ONE browser's IndexedDB, so clearing site
+// data, reinstalling the PWA, or moving to a new phone destroys it for good.
+// These functions are the only way out and back in. The Settings UI calls
+// exportAllData() / importAllData(data, mode) by exactly these names.
+
+// Every store that goes into a backup file, in the order it's written out.
+const BACKUP_STORES = [
+  STORE_MESSAGES,
+  STORE_CHATS,
+  STORE_TOOLS,
+  STORE_ROUTINES,
+  STORE_PLANTS,
+  STORE_CODEX,
+  STORE_SHOPPING,
+  STORE_TODOS,
+];
+
+// Restore order — deliberately different. Plants and chats go FIRST because
+// merge mode hands every imported record a NEW id, and the stores that point
+// at them (routine.plantId, message.chatId) can only be remapped once those
+// new ids exist.
+const IMPORT_STORE_ORDER = [
+  STORE_PLANTS,
+  STORE_CHATS,
+  STORE_MESSAGES,
+  STORE_ROUTINES,
+  STORE_TOOLS,
+  STORE_CODEX,
+  STORE_SHOPPING,
+  STORE_TODOS,
+];
+
+async function exportAllData() {
+  const stores = {};
+  // One store at a time rather than Promise.all: a photo-heavy garden is
+  // already the largest thing this app ever holds in memory at once, and
+  // nothing is waiting on a backup finishing a few ms sooner.
+  for (const name of BACKUP_STORES) {
+    stores[name] = await getAllRecords(name);
+  }
+  return {
+    app: "garden-companion",
+    schema: DB_VERSION,
+    exportedAt: Date.now(),
+    // Photos are base64 data URLs held INSIDE the records themselves
+    // (plant.photoHistory[].imageThumb, plant.coverThumb, tool.photoThumb,
+    // message.imageThumb), so they travel with the backup for free — which is
+    // also why an export of a well-used garden can run to tens of MB.
+    stores: stores,
+  };
+}
+
+// Import refuses anything it can't positively identify as our own backup:
+// a half-restored database is far worse than a rejected file. Messages are
+// written for a human because the UI shows e.message verbatim.
+function assertBackupShape(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("That file isn't a Garden Companion backup — it isn't backup data at all.");
+  }
+  if (data.app !== "garden-companion") {
+    throw new Error('That file isn\'t a Garden Companion backup (its "app" marker doesn\'t match).');
+  }
+  if (!data.stores || typeof data.stores !== "object" || Array.isArray(data.stores)) {
+    throw new Error('This backup has no "stores" section, so there is nothing in it to restore.');
+  }
+}
+
+// mode "replace": this device ends up matching the backup (ids preserved).
+// mode "merge":   existing records are kept and the backup is added alongside.
+// Returns { imported: { store: count }, skipped: [storeName], mode }.
+async function importAllData(data, mode) {
+  assertBackupShape(data);
+  if (mode !== "replace" && mode !== "merge") {
+    // Never guess a default here — guessing wrong either wipes the user's
+    // garden or silently duplicates all of it.
+    throw new Error('Import mode must be "replace" or "merge".');
+  }
+
+  const imported = {};
+  const skipped = [];
+  // oldId -> id the record actually got on THIS device (merge mode only).
+  const newPlantIds = new Map();
+  const newChatIds = new Map();
+
+  // Schema tolerance: a backup from a NEWER build can carry stores this
+  // version has never heard of, and one from an OLDER build simply won't have
+  // some. Both are fine — import what's recognised, report the rest.
+  for (const key of Object.keys(data.stores)) {
+    if (BACKUP_STORES.indexOf(key) === -1) skipped.push(key);
+  }
+
+  for (const name of IMPORT_STORE_ORDER) {
+    const records = data.stores[name];
+    if (records === undefined) continue; // older backup: that store didn't exist yet
+    if (!Array.isArray(records)) {
+      skipped.push(name); // present but malformed — don't guess at it
+      continue;
+    }
+
+    // Only stores the backup actually contains get cleared, so restoring an
+    // OLD backup can't destroy data it has no replacement for.
+    if (mode === "replace") await clearStore(name);
+
+    let count = 0;
+    for (const record of records) {
+      if (!record || typeof record !== "object" || Array.isArray(record)) continue; // junk row
+      const copy = { ...record };
+
+      if (mode === "replace") {
+        // putRecord, NOT addRecord: the original id HAS to survive. With new
+        // ids, every cross-reference in the backup (routine.plantId,
+        // message.chatId) would quietly point at the wrong record or nothing.
+        await putRecord(name, copy);
+        count++;
+        continue;
+      }
+
+      // merge: existing records are untouched, so each imported record is
+      // inserted fresh and gets a new autoIncrement id. That invalidates every
+      // id the backup referred to, so references are rewritten on the way in —
+      // which is why plants and chats were restored first.
+      if (name === STORE_ROUTINES && copy.plantId != null) {
+        // An unresolvable plantId is nulled, not kept: on this device that same
+        // number belongs to a different plant, and a routine silently attached
+        // to the wrong plant is worse than one with no plant at all.
+        copy.plantId = newPlantIds.has(copy.plantId) ? newPlantIds.get(copy.plantId) : null;
+      }
+      if (name === STORE_MESSAGES && copy.chatId != null) {
+        // Same trap: a stale chatId would drop imported messages into an
+        // unrelated local conversation. Orphans are kept, just unfiled.
+        copy.chatId = newChatIds.has(copy.chatId) ? newChatIds.get(copy.chatId) : null;
+      }
+
+      const oldId = copy.id;
+      delete copy.id;
+      const newId = await addRecord(name, copy);
+      if (name === STORE_PLANTS && oldId != null) newPlantIds.set(oldId, newId);
+      if (name === STORE_CHATS && oldId != null) newChatIds.set(oldId, newId);
+      count++;
+    }
+    imported[name] = count;
+  }
+
+  return { imported: imported, skipped: skipped, mode: mode };
+}
+
+// Saves an export to the user's device. Not pretty-printed: indentation would
+// roughly double a file that is mostly base64 photo data already.
+function downloadDataBackup(data, filename) {
+  const name = filename || "garden-companion-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+  const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on a later tick, never in the same one as the click: iOS Safari
+  // aborts an in-flight download if its object URL dies immediately.
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  return name;
+}

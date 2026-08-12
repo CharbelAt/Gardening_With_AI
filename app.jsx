@@ -10,6 +10,11 @@
 // call view or call mode. Cross-module links (e.g. a plant's "Ask
 // Sprout" button, a routine's linked plant, an item's Codex button) go through
 // navigate(view, {itemId, draft, query}).
+//
+// "today" and "search" are deliberately NOT bottom-nav items: six tabs is
+// already the most that fits a 360px phone. Today is reachable from the header
+// (and can be the landing view, see LS_LANDING_VIEW), search from the header
+// magnifier — both are app-wide, not one more peer section.
 
 function App() {
   const [chats, setChats] = useState([]);
@@ -29,6 +34,7 @@ function App() {
   const [renameTarget, setRenameTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [contextPeek, setContextPeek] = useState(null); // { summary, revision } from the refresh button
+  const [showSearch, setShowSearch] = useState(false); // global search overlay (header magnifier)
 
   useEffect(() => {
     localStorage.setItem(LS_THEME, theme);
@@ -88,11 +94,21 @@ function App() {
       const history = await getMessagesByChat(activeId);
       setMessages(history);
       setLoaded(true);
+      // Landing view: Today is opt-in (Settings), because most sessions start
+      // with a question, not a chore list. Chat stays the default.
+      if (localStorage.getItem(LS_LANDING_VIEW) === "today") setView("today");
       if (!getSettings().apiBase) setShowSettings(true);
       // Back-fill codex entries for any items that missed their auto-research
       // (background, throttled — see syncCodexEntries in helpers.jsx).
       if (getSettings().apiBase) syncCodexEntries();
     })();
+  }, []);
+
+  // Due-date notifications: only ever fire while a tab is open (no push server
+  // — see notify.jsx). Guarded so the app still boots if notify.jsx is absent.
+  useEffect(() => {
+    if (typeof startNotifyTimer !== "function") return;
+    return startNotifyTimer();
   }, []);
 
   async function switchChat(id) {
@@ -164,6 +180,15 @@ function App() {
     <div className={`app ${theme === "dark" ? "dark" : ""}`}>
       <header className="app-header">
         <div className="header-side">
+          {/* Today: available from every view — it's the "what now?" screen,
+              not a section, so it doesn't belong in the bottom nav. */}
+          <button
+            className={view === "today" ? "icon-btn active" : "icon-btn"}
+            onClick={() => navigate(view === "today" ? "chat" : "today")}
+            title="Today"
+          >
+            <i className="bi bi-sun"></i>
+          </button>
           {view === "chat" && (
             <button className="icon-btn" onClick={() => setShowChatList(true)} title="Chats">
               <i className="bi bi-chat-square-text"></i>
@@ -183,6 +208,9 @@ function App() {
           </span>
         </span>
         <div className="header-side right">
+          <button className="icon-btn" onClick={() => setShowSearch(true)} title="Search everything">
+            <i className="bi bi-search"></i>
+          </button>
           <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
             <i className="bi bi-gear"></i>
           </button>
@@ -206,6 +234,7 @@ function App() {
         {view === "inventory" && <InventoryView initialId={navItemId} onNavigate={navigate} />}
         {view === "routines" && <RoutinesView initialId={navItemId} onNavigate={navigate} />}
         {view === "todos" && <TodosView onNavigate={navigate} />}
+        {view === "today" && <TodayView onNavigate={navigate} />}
         {view === "codex" && <CodexView initialQuery={codexQuery} onNavigate={navigate} />}
       </main>
 
@@ -230,6 +259,16 @@ function App() {
       )}
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+
+      {showSearch && (
+        <SearchOverlay
+          onClose={() => setShowSearch(false)}
+          onNavigate={(nextView, opts) => {
+            setShowSearch(false); // a result always takes you somewhere — get out of the way
+            navigate(nextView, opts);
+          }}
+        />
+      )}
 
       {contextPeek && (
         <ContextPeekModal
