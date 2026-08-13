@@ -421,22 +421,17 @@ input, textarea, select, button { font-size: var(--fs-body); }
   transition: background var(--dur-base) var(--ease-standard), color var(--dur-base) var(--ease-standard);
 }
 
-/* Six tabs (To-do joined the bar) have to fit a 360px viewport: the label is
-   the 11px tab-bar size HIG itself uses, and never wraps. */
+/* FIVE tabs on a 360px viewport leave ~70px each (~62px at 320px), so the
+   label stays at the 11px tab-bar size HIG itself uses at every width —
+   "Inventory", the longest, measures ~54px. Never wraps. The sub-340px
+   10px downgrade this rule used to carry existed only because six tabs
+   collided; the redesign removed the reason for it. */
 .bottom-nav-label {
   font-size: var(--fs-caption-2);
   font-weight: var(--fw-medium);
   line-height: 1.1;
   letter-spacing: 0.005em;
   white-space: nowrap;
-}
-
-/* iPhone-SE-class widths: 6 tabs × 11px labels would collide, so drop one
-   step rather than let "Inventory" wrap or clip. This is the one place in the
-   app that goes below 11px, and it's the same 10pt iOS itself uses for tab
-   labels on compact widths — the alternative is a clipped word. */
-@media (max-width: 340px) {
-  .bottom-nav-label { font-size: 0.625rem; }
 }
 
 .bottom-nav-item.active { color: var(--primary); }
@@ -2361,3 +2356,313 @@ input, textarea, select, button { font-size: var(--fs-body); }
 }
 .backup-mode-option strong { display: block; margin-bottom: 2px; font-size: var(--fs-callout); }
 .backup-mode-option p { margin: 0; font-size: var(--fs-subhead); line-height: var(--lh-body); color: var(--text-dim); }
+
+/* ---------- segmented control ---------- */
+
+/* An iOS-style segmented control rather than another row of pills: two
+   mutually exclusive SECTIONS of one tab (Tasks: Routines / To-do) are a
+   different kind of choice from the tag filters above a grid, and a raised
+   pill inside a track reads as "one of these two" without being read.
+   Inventory's Items / To-get switcher is the same kind of choice and should
+   adopt this class too — it currently borrows .tag-filter-bar + .tag-chip. */
+.segmented {
+  display: flex;
+  gap: 2px;
+  /* Same gutter and rhythm as .tag-filter-bar, which occupies this slot in
+     every other view. */
+  margin: var(--sp-2) var(--gutter) var(--sp-1);
+  padding: 2px;
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  flex-shrink: 0;
+}
+
+.segmented-option {
+  flex: 1;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 36px;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  /* 2px inside the track's radius, so the pill sits concentrically. */
+  border-radius: calc(var(--r-md) - 2px);
+  background: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: var(--fs-footnote);
+  font-weight: var(--fw-medium);
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-base) var(--ease-standard),
+    color var(--dur-base) var(--ease-standard), transform var(--dur-fast) var(--ease-out);
+}
+
+/* Same trick as .tag-chip: the track stays 40px so it doesn't tower over the
+   list it filters, while the real hit area is the full 44px. */
+.segmented-option::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: var(--tap);
+  transform: translateY(-50%);
+}
+
+.segmented-option:active { transform: scale(var(--press-scale)); }
+
+.segmented-option i { font-size: 0.95em; }
+
+.segmented-option.active {
+  background: var(--surface);
+  color: var(--primary);
+  box-shadow: var(--shadow-1);
+}
+
+/* Dark mode inverts which of the two surfaces is the "raised" one: on a dark
+   track the selected segment has to be LIGHTER to read as lifted, exactly the
+   way the native control behaves. */
+.dark .segmented { background: var(--surface); }
+.dark .segmented-option.active { background: var(--surface-2); color: var(--primary-soft); }
+
+/* ============================================================
+   Density pass: disclosures, overflow sheets, capped lists
+   (chat.jsx / garden.jsx / inventory.jsx / codex.jsx / today.jsx)
+
+   One rule everywhere below: primary information is always on screen,
+   secondary information is one obvious tap away, and the tap target says
+   what it opens.
+   ============================================================ */
+
+/* ---------- labelled show/hide section (GcDisclosure) ---------- */
+
+.gc-disclosure { margin-top: var(--sp-4); }
+
+/* Reads as a row of the page rather than as a button: a hairline above it, the
+   label carrying the meaning, the chevron only confirming direction. Full 44px
+   tall so a thumb can land on it on the way past. */
+.gc-disclosure-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--sp-2) 0;
+  background: none;
+  border: none;
+  border-top: var(--hairline) solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-headline);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-heading);
+  letter-spacing: var(--tracking-headline);
+  text-align: left;
+  cursor: pointer;
+  transition: opacity var(--dur-fast) linear, transform var(--dur-fast) var(--ease-out);
+}
+
+.gc-disclosure-toggle:hover { opacity: 0.75; }
+.gc-disclosure-toggle:active { transform: scale(var(--press-scale-subtle)); }
+.gc-disclosure-label { flex: 1; min-width: 0; }
+.gc-disclosure-toggle > i { flex-shrink: 0; font-size: var(--fs-callout); color: var(--primary-soft); }
+/* The chevron is chrome, not content — it never competes with the label. */
+.gc-disclosure-toggle > i:last-child { color: var(--text-faint); }
+
+/* No padding while closed: the body element stays in the DOM so aria-controls
+   always resolves, but an empty one must not leave a gap. */
+.gc-disclosure-body:not(:empty) { padding-top: var(--sp-2); }
+
+/* ---------- overflow menu / action sheet (GcOverflowMenu) ---------- */
+
+/* Same scrim and z-index as .modal-backdrop, so a sheet opened from a detail
+   page still sits above the sticky view header. */
+.gc-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: max(var(--sp-4), env(safe-area-inset-top)) var(--sp-4) 0;
+  background: var(--overlay);
+  animation: backdrop-in var(--dur-base) var(--ease-standard);
+}
+
+.gc-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  width: 100%;
+  max-width: 380px;
+  max-height: 80vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-3) var(--sp-3) calc(var(--sp-3) + env(safe-area-inset-bottom));
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  box-shadow: var(--shadow-3);
+  animation: sheet-in var(--dur-slow) var(--ease-out);
+}
+
+/* Above phone width the app is a framed column, so centre the sheet like the
+   other dialogs instead of gluing it to the bottom of a tall window. */
+@media (min-width: 481px) {
+  .gc-sheet-backdrop { align-items: center; padding-bottom: var(--sp-4); }
+  .gc-sheet { border-radius: var(--r-lg); animation: modal-in var(--dur-base) var(--ease-out); }
+}
+
+.gc-sheet-title {
+  margin: 0;
+  padding: var(--sp-1) var(--sp-3) var(--sp-2);
+  font-size: var(--fs-footnote);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-heading);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.gc-sheet-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--sp-3);
+  background: none;
+  border: none;
+  border-radius: var(--r-md);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-callout);
+  line-height: var(--lh-heading);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-out);
+}
+
+.gc-sheet-item:hover { background: var(--surface-2); }
+.gc-sheet-item:active { transform: scale(var(--press-scale-subtle)); }
+.gc-sheet-item > i { flex-shrink: 0; font-size: var(--fs-title-3); color: var(--primary-soft); }
+.gc-sheet-item.danger { color: var(--danger); }
+.gc-sheet-item.danger > i { color: var(--danger); }
+
+/* The way out. Separated by a hairline rather than a gap, so the sheet still
+   reads as one object. */
+.gc-sheet-cancel {
+  justify-content: center;
+  margin-top: var(--sp-1);
+  border-top: var(--hairline) solid var(--border);
+  border-radius: 0;
+  color: var(--text-dim);
+  font-weight: var(--fw-medium);
+}
+
+/* ---------- detail-page lede (garden.jsx / inventory.jsx) ---------- */
+
+/* Replaces the chip wall at the top of a detail page with the two or three
+   facts that actually drive a decision — as text, not as boxes. */
+.detail-lede {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-callout);
+  line-height: var(--lh-heading);
+  color: var(--text-dim);
+}
+
+.detail-lede i { margin-right: var(--sp-1); color: var(--primary-soft); }
+.detail-lede-main { color: var(--text); font-weight: var(--fw-medium); }
+.detail-lede-sub { color: var(--text-dim); }
+
+/* ---------- clamped reference text (codex.jsx) ---------- */
+
+/* Height-capped, not truncated: the whole entry stays in the DOM, so
+   find-in-page, selection and copy still see all of it. */
+.gc-clamp {
+  position: relative;
+  max-height: 4.6em;
+  overflow: hidden;
+}
+
+/* Fades the cut line instead of slicing a word in half. Matches the card it
+   sits on, so it reads as the text running out rather than as decoration. */
+.gc-clamp::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 1.8em;
+  background: linear-gradient(to bottom, transparent, var(--surface));
+  pointer-events: none;
+}
+
+.gc-readmore {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--tap);
+  margin-top: 2px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--primary);
+  font-family: inherit;
+  font-size: var(--fs-footnote);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: opacity var(--dur-fast) linear, transform var(--dur-fast) var(--ease-out);
+}
+
+.dark .gc-readmore { color: var(--primary-soft); }
+.gc-readmore:hover { opacity: 0.8; }
+.gc-readmore:active { transform: scale(var(--press-scale)); }
+.gc-readmore i { font-size: var(--fs-caption); }
+
+/* ---------- capped banner stack (chat.jsx) ---------- */
+
+/* Error / applied / confirm banners all live here. chat.jsx shows at most one
+   transient banner at a time, and the confirm queue scrolls inside this strip
+   rather than walking the composer off the bottom of the screen. */
+.gc-banner-stack {
+  flex-shrink: 0;
+  max-height: 38vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Nothing to say — take up no room at all. */
+.gc-banner-stack:empty { display: none; }
+
+/* ---------- "+N more" hand-off row (today.jsx) ---------- */
+
+.today-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--sp-2) var(--sp-3);
+  background: none;
+  border: none;
+  color: var(--primary);
+  font-family: inherit;
+  font-size: var(--fs-footnote);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-heading);
+  cursor: pointer;
+  transition: opacity var(--dur-fast) linear, transform var(--dur-fast) var(--ease-out);
+}
+
+.dark .today-more { color: var(--primary-soft); }
+.today-more:hover { opacity: 0.8; }
+.today-more:active { transform: scale(var(--press-scale-subtle)); }
+.today-more i { font-size: var(--fs-caption); }

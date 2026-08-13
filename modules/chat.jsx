@@ -4,6 +4,119 @@
 // dictation (VoiceButton in voice.jsx — tap to open the mic, tap again to
 // close it, and the transcript lands in the input instead of being sent).
 
+// ---------------------------------------------------------------------------
+// Density primitives (Gc* prefix) — progressive disclosure, shared by every
+// view module.
+//
+// They would normally belong in shared-ui.jsx, but that file is owned by
+// another pass right now. chat.jsx is the FIRST view module index.html loads,
+// so defining them here means garden/inventory/codex/today can use them as
+// plain globals (all uses are at render time, long after every script has run).
+// ---------------------------------------------------------------------------
+
+// A labelled show/hide section. The control ALWAYS says what it opens
+// ("History (12)") — a bare chevron gives a thumb nothing to aim at and a
+// screen reader nothing to announce.
+//
+// Uncontrolled by default (`defaultOpen`); pass `open` + `onToggle` when the
+// parent has to open it itself — ToolDetail pops "Product info" open the
+// moment a fresh label scan lands.
+function GcDisclosure({ id, label, count, icon, defaultOpen, open, onToggle, children }) {
+  const [selfOpen, setSelfOpen] = useState(!!defaultOpen);
+  const controlled = typeof open === "boolean";
+  const isOpen = controlled ? open : selfOpen;
+
+  function toggle() {
+    if (controlled) onToggle(!isOpen);
+    else setSelfOpen(!isOpen);
+  }
+
+  return (
+    <div className="gc-disclosure">
+      <button className="gc-disclosure-toggle" onClick={toggle} aria-expanded={isOpen} aria-controls={id}>
+        {icon && <i className={`bi ${icon}`} aria-hidden="true"></i>}
+        <span className="gc-disclosure-label">
+          {label}
+          {count == null ? "" : ` (${count})`}
+        </span>
+        <i className={isOpen ? "bi bi-chevron-up" : "bi bi-chevron-down"} aria-hidden="true"></i>
+      </button>
+      {/* The body element exists whether or not it's open, so aria-controls
+          always points at something real — but its CONTENT is conditional, so a
+          collapsed 50-entry history with 50 thumbnails costs nothing to keep. */}
+      <div className="gc-disclosure-body" id={id}>{isOpen ? children : null}</div>
+    </div>
+  );
+}
+
+// "⋯ More" — the tertiary-action bucket, and the two-way photo picker. One
+// component covers both so there is only one set of dismiss rules to get
+// right: tap outside, press Escape, or pick an item.
+//
+// No focus trap, on purpose — same call shared-ui.jsx's useEscapeKey comment
+// makes. This is a menu you dip into, not a task you're locked inside.
+//
+// `items`: [{ key, icon, label, onClick, disabled, danger }]. Falsy entries are
+// dropped, so a caller can inline a condition (`hasPhoto && {…}`).
+function GcOverflowMenu({ id, title, label, icon, items, disabled, className }) {
+  const [open, setOpen] = useState(false);
+  // Unconditional (rules of hooks); only closes something while open.
+  useEscapeKey(() => open && setOpen(false));
+  const entries = (items || []).filter(Boolean);
+  const name = label || title || "More actions";
+
+  function pick(item) {
+    // Fire FIRST, close second: an item that opens a file picker has to run
+    // inside the user's own click for the browser to allow it at all.
+    if (item.onClick) item.onClick();
+    setOpen(false);
+  }
+
+  return (
+    <React.Fragment>
+      <button
+        className={className || "btn btn-ghost small"}
+        onClick={() => setOpen(!open)}
+        disabled={disabled}
+        title={name}
+        aria-label={name}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={id}
+      >
+        <i className={`bi ${icon || "bi-three-dots"}`} aria-hidden="true"></i>
+        {label ? " " : null}
+        {label}
+      </button>
+      {open && (
+        <div className="gc-sheet-backdrop" onClick={() => setOpen(false)}>
+          <div
+            className="gc-sheet"
+            id={id}
+            role="dialog"
+            aria-label={title || name}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="gc-sheet-title">{title || name}</p>
+            {entries.map((item) => (
+              <button
+                key={item.key}
+                className={item.danger ? "gc-sheet-item danger" : "gc-sheet-item"}
+                disabled={item.disabled}
+                onClick={() => pick(item)}
+              >
+                <i className={`bi ${item.icon}`} aria-hidden="true"></i>
+                <span>{item.label}</span>
+              </button>
+            ))}
+            <button className="gc-sheet-item gc-sheet-cancel" onClick={() => setOpen(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </React.Fragment>
+  );
+}
+
 // The follow-up questions the model proposed on its last reply (FOLLOWUP line,
 // parsed by extractFollowups). Tapping one asks it immediately.
 function FollowupChips({ suggestions, onPick, disabled }) {
@@ -267,13 +380,23 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         )}
         <div ref={scrollRef} />
       </div>
-      {error && <div className="error-banner" role="alert">{error}</div>}
-      {appliedNote && (
-        <div className="applied-banner" role="status" aria-live="polite">
-          <i className="bi bi-check2-circle" aria-hidden="true"></i> {appliedNote}
-        </div>
-      )}
-      <PendingActionsBanner actions={pendingActions} onResolve={setPendingActions} />
+      {/* One capped, scrollable strip instead of a growing wall between the
+          thread and the composer. Error and "applied" are mutually exclusive
+          (an error means nothing was applied), and the confirm queue scrolls
+          inside the strip rather than pushing the composer off the screen.
+          The wrapper collapses via .gc-banner-stack:empty when all three are
+          quiet — PendingActionsBanner stays MOUNTED so its unmount cleanup
+          (which clears the AI-facing queue) still fires only on view exit. */}
+      <div className="gc-banner-stack">
+        {error ? (
+          <div className="error-banner" role="alert">{error}</div>
+        ) : appliedNote ? (
+          <div className="applied-banner" role="status" aria-live="polite">
+            <i className="bi bi-check2-circle" aria-hidden="true"></i> {appliedNote}
+          </div>
+        ) : null}
+        <PendingActionsBanner actions={pendingActions} onResolve={setPendingActions} />
+      </div>
       {pendingPhoto && (
         <div className="photo-preview">
           <img src={pendingPhoto.dataUrl} alt="Photo to send" />
@@ -292,24 +415,21 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
       )}
       <VoiceListeningBar state={voice.state} seconds={voice.seconds} hint={voice.hint} live={voice.live} />
       <div className="composer">
-        <button
+        {/* Camera and gallery were two separate buttons because they need two
+            different <input capture> attributes. They still are — the sheet
+            just picks which hidden input to click, so the row is
+            attach · text · mic · send instead of five controls deep. */}
+        <GcOverflowMenu
+          id="chat-attach-sheet"
           className="icon-btn"
-          title="Take a photo"
-          aria-label="Take a photo"
-          onClick={() => cameraInputRef.current.click()}
+          title="Add a photo"
+          icon="bi-paperclip"
           disabled={busy}
-        >
-          <i className="bi bi-camera" aria-hidden="true"></i>
-        </button>
-        <button
-          className="icon-btn"
-          title="Photo from gallery"
-          aria-label="Photo from gallery"
-          onClick={() => fileInputRef.current.click()}
-          disabled={busy}
-        >
-          <i className="bi bi-images" aria-hidden="true"></i>
-        </button>
+          items={[
+            { key: "camera", icon: "bi-camera", label: "Take a photo", onClick: () => cameraInputRef.current.click() },
+            { key: "gallery", icon: "bi-images", label: "Choose from gallery", onClick: () => fileInputRef.current.click() },
+          ]}
+        />
         <input
           ref={cameraInputRef}
           type="file"

@@ -279,7 +279,13 @@ function SettingsBackupSection({ onCleared }) {
   );
 }
 
-function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange }) {
+// `onShowContext` and `onOpenCodex` are both optional and both additive — the
+// modal renders without them. They exist because the header was down to two
+// jobs (search, settings) and these two are the things that lost their icon:
+// the AI-context peek is a verification tool, not a daily control (the snapshot
+// is rebuilt on every request regardless), and Codex left the bottom bar and
+// needs one entry point that isn't a search result.
+function SettingsModal({ onClose, onCleared, onShowHelp, onShowContext, onOpenCodex, theme, onThemeChange }) {
   const [apiBase, setApiBase] = useState(getSettings().apiBase);
   const [secret, setSecret] = useState(getSettings().secret);
   const [writeMode, setWriteMode] = useState(getAiWriteMode());
@@ -376,6 +382,16 @@ function SettingsModal({ onClose, onCleared, onShowHelp, theme, onThemeChange })
         {typeof NotifySettingsSection === "function" && <NotifySettingsSection />}
 
         <hr />
+        {onOpenCodex && (
+          <button className="btn btn-ghost btn-block" onClick={onOpenCodex}>
+            <i className="bi bi-book" aria-hidden="true"></i> Knowledge library (Codex)
+          </button>
+        )}
+        {onShowContext && (
+          <button className="btn btn-ghost btn-block" onClick={onShowContext}>
+            <i className="bi bi-arrow-repeat" aria-hidden="true"></i> What can Sprout see?
+          </button>
+        )}
         <button className="btn btn-ghost btn-block" onClick={onShowHelp}>
           <i className="bi bi-question-circle" aria-hidden="true"></i> How to use Garden Companion
         </button>
@@ -649,17 +665,44 @@ function TagChips({ tags }) {
 
 // ---------- bottom navigation ----------
 
+// Five tabs, in the order a gardener actually uses them: what needs doing
+// (Today), what I grow (Garden), asking about it (Chat, centre — the app's
+// most-used screen), the checklists (Tasks = routines + to-dos), what I own
+// (Inventory).
+//
+// Codex is deliberately NOT here. It is a reference library you arrive at from
+// something else — the header search indexes it, every plant/tool detail page
+// has a Codex button, and Settings has a "Knowledge library" row — so a
+// permanent tab spent screen width on a destination nobody opens cold.
 const NAV_ITEMS = [
-  { key: "chat", label: "Chat", icon: "bi-chat-dots" },
+  { key: "today", label: "Today", icon: "bi-sun" },
   { key: "garden", label: "Garden", icon: "bi-flower3" },
-  { key: "routines", label: "Routines", icon: "bi-arrow-repeat" },
-  { key: "todos", label: "To-do", icon: "bi-check2-square" },
+  { key: "chat", label: "Chat", icon: "bi-chat-dots" },
+  { key: "tasks", label: "Tasks", icon: "bi-check2-square" },
   { key: "inventory", label: "Inventory", icon: "bi-box-seam" },
-  { key: "codex", label: "Codex", icon: "bi-book" },
 ];
 
+// Routines and To-do merged into the Tasks tab, but half the app still links
+// to them by their old view keys (garden.jsx's linked routines, today.jsx's
+// rows, search.jsx's results). Those keys stay valid for ever: they resolve to
+// the tab that now owns them plus the section to preselect. One map so the
+// bar's highlight and app.jsx's router can't drift apart.
+const LEGACY_VIEW_ALIASES = {
+  routines: { view: "tasks", section: "routines" },
+  todos: { view: "tasks", section: "todos" },
+};
+
+function resolveView(view) {
+  return LEGACY_VIEW_ALIASES[view] || { view: view, section: null };
+}
+
 function BottomNav({ view, onNavigate, dueCount, togetCount, todoCount }) {
-  const activeKey = view;
+  const activeKey = resolveView(view).view;
+  // Routines and to-dos are one destination now, so they get ONE badge —
+  // overdue routines plus to-dos due today or already late. Today gets none on
+  // purpose: it is the overview of exactly these same items, so a badge there
+  // would count everything the bar already shows a second time.
+  const taskCount = (dueCount || 0) + (todoCount || 0);
   return (
     <nav className="bottom-nav">
       {NAV_ITEMS.map((item) => (
@@ -671,14 +714,11 @@ function BottomNav({ view, onNavigate, dueCount, togetCount, todoCount }) {
         >
           <span className="bottom-nav-icon">
             <i className={`bi ${item.icon}`} aria-hidden="true"></i>
-            {item.key === "routines" && dueCount > 0 && (
-              <span className="nav-badge">{dueCount > 9 ? "9+" : dueCount}</span>
+            {item.key === "tasks" && taskCount > 0 && (
+              <span className="nav-badge">{taskCount > 9 ? "9+" : taskCount}</span>
             )}
             {item.key === "inventory" && togetCount > 0 && (
               <span className="nav-badge">{togetCount > 9 ? "9+" : togetCount}</span>
-            )}
-            {item.key === "todos" && todoCount > 0 && (
-              <span className="nav-badge">{todoCount > 9 ? "9+" : todoCount}</span>
             )}
           </span>
           <span className="bottom-nav-label">{item.label}</span>
@@ -696,25 +736,27 @@ function HelpModal({ onClose }) {
         <h2 id="help-modal-title">How to use Garden Companion</h2>
         <div className="help-content">
           <h3>Getting around</h3>
-          <p>The bar at the bottom switches between Chat, Garden, Routines, To-do, Inventory, and Codex. The gear in the header opens Settings.</p>
+          <p>The bar at the bottom switches between Today, Garden, Chat, Tasks, and Inventory. Tasks holds both your recurring Routines and your one-off To-do list — the switch at the top of that tab moves between them. In the header, the magnifier searches everything you've saved and the gear opens Settings.</p>
           <h3>Chat</h3>
-          <p>Type gardening questions to Sprout. The camera button takes a new photo; the pictures button picks one from your gallery — either way it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil". After a reply you'll often see a row of suggested follow-up questions — tap one to ask it straight away. Sprout is handed a fresh read of your plants, tools, routines and lists with every single message, so it answers from what's actually saved; the circular-arrows button in the header shows you exactly what it can see right now.</p>
+          <p>Type gardening questions to Sprout. The camera button takes a new photo; the pictures button picks one from your gallery — either way it'll identify the plant and assess its health. Sprout knows your plants, tools, and routines, and can update them for you: just say things like "I watered the tomatoes" or "I bought neem oil". After a reply you'll often see a row of suggested follow-up questions — tap one to ask it straight away. Sprout is handed a fresh read of your plants, tools, routines and lists with every single message, so it answers from what's actually saved; Settings › "What can Sprout see?" shows you exactly what that is right now.</p>
           <h3>Talking instead of typing</h3>
           <p>Tap the microphone button in the composer and speak — it keeps listening, however long you take, until you tap it again (the button turns into a red stop button while it's on). Your words appear in the strip above the composer as you say them, so you can see it's hearing you; tap stop and they drop into the text box, added to anything already typed. Nothing is sent until you press Send, so you can fix a word first. If Sprout is reading a reply aloud, tapping the mic stops it. If you forget to turn it off it stops itself after 90 seconds and keeps what it heard.</p>
           <h3>Chats</h3>
           <p>The chat-bubbles icon in the header lets you keep separate conversation threads, rename them, or start a new one. New chats name themselves after your first message.</p>
+          <h3>Today</h3>
+          <p>The first tab: what actually needs you today — overdue routines, to-dos due now, and plants that look thirsty — each tickable straight from the list. "Summarize my day" asks Sprout for a short plan that takes the weather into account.</p>
           <h3>Garden</h3>
           <p>Track your plants: name, location, planting date, and a full care history. Take photos from a plant's page to build its timeline, tap any photo to view it full-screen, and use "Ask Sprout" to jump into chat about that specific plant.</p>
-          <h3>Routines</h3>
-          <p>Recurring care tasks with a "Due" badge when overdue (also shown on the bottom bar). Link a routine to a plant with a care action — marking "Water the ficus" done then updates the ficus's watering record automatically.</p>
-          <h3>To-do</h3>
-          <p>One-off tasks that aren't routines: "prune the roses", "repot the mint on Saturday". Type one in the box at the top (a due date is optional) and tap + or press Enter. Tick a task off when it's done and it drops to the bottom with a line through it — "Clear completed" tidies those away. Anything overdue or due today shows a badge on the To-do tab. Sprout can add, update, tick off, and remove tasks for you: just say "remind me to prune the roses this weekend".</p>
+          <h3>Tasks › Routines</h3>
+          <p>Recurring care tasks with a "Due" badge when overdue (they also count towards the badge on the Tasks tab). Link a routine to a plant with a care action — marking "Water the ficus" done then updates the ficus's watering record automatically.</p>
+          <h3>Tasks › To-do</h3>
+          <p>One-off tasks that aren't routines: "prune the roses", "repot the mint on Saturday". Type one in the box at the top (a due date is optional) and tap + or press Enter. Tick a task off when it's done and it drops to the bottom with a line through it — "Clear completed" tidies those away. Anything overdue or due today counts towards the badge on the Tasks tab. Sprout can add, update, tick off, and remove tasks for you: just say "remind me to prune the roses this weekend".</p>
           <h3>Inventory</h3>
           <p>Your tools and supplies as cards — tap one for details or to edit it. Photograph an item from its page and Sprout reads the label for you: product type, active ingredients, dosage and safety notes land in a "Product info" section (and the picture becomes the item's photo). Telling Sprout what you bought or used up keeps this in sync too. The "To get" tab is your shopping checklist: add items there (or say "I need to buy…"), check them off when bought, and move them straight into your inventory. Open items show as a badge on the Inventory tab.</p>
           <h3>Tags</h3>
           <p>Plants, tools, and routines can all be tagged (e.g. "herb", "pesticide", "watering") — pick preset tags or type your own when adding/editing, and Sprout tags things it adds for you. Tap a tag in the bar above any grid to filter by it.</p>
           <h3>Codex</h3>
-          <p>Your garden's knowledge library. Every plant or tool you add gets researched automatically in the background — scientific facts, care/usage guidance, and sources appear here on their own. You can also search anything, run the in-depth AI search, and save results. Item pages have a Codex button that jumps straight to their entry.</p>
+          <p>Your garden's knowledge library. Every plant or tool you add gets researched automatically in the background — scientific facts, care/usage guidance, and sources appear here on their own. You can also search anything, run the in-depth AI search, and save results. It has no tab of its own — open it from any item page's Codex button, from a search result, or from Settings › Knowledge library.</p>
           <h3>Settings</h3>
           <p>Set your backend URL and client secret (from your VPS), choose whether AI-suggested updates apply automatically or ask first, and clear local data if needed.</p>
           <h3>Your data</h3>

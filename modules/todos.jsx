@@ -83,7 +83,11 @@ function EditTodoModal({ todo, onSave, onCancel }) {
   );
 }
 
-function TodosView({ onNavigate }) {
+// `renderHeader` (optional): same contract as RoutinesView — inside the Tasks
+// tab the host renders one shared header and we hand it the action that
+// belongs to this section ("Clear completed"). Absent, this view renders its
+// own header and still works standalone.
+function TodosView({ onNavigate, renderHeader }) {
   const [todos, setTodos] = useState([]);
   const [newText, setNewText] = useState("");
   const [newDue, setNewDue] = useState("");
@@ -134,16 +138,23 @@ function TodosView({ onNavigate }) {
     refresh();
   }
 
+  const clearDoneButton =
+    doneCount > 0 ? (
+      <button className="btn btn-ghost small" onClick={() => setConfirmClearDone(true)}>
+        <i className="bi bi-eraser" aria-hidden="true"></i> Clear completed
+      </button>
+    ) : null;
+
   return (
     <div className="tab-panel">
-      <div className="view-header">
-        <h2><i className="bi bi-check2-square" aria-hidden="true"></i> To-do</h2>
-        {doneCount > 0 && (
-          <button className="btn btn-ghost small" onClick={() => setConfirmClearDone(true)}>
-            <i className="bi bi-eraser" aria-hidden="true"></i> Clear completed
-          </button>
-        )}
-      </div>
+      {renderHeader ? (
+        renderHeader(clearDoneButton)
+      ) : (
+        <div className="view-header">
+          <h2><i className="bi bi-check2-square" aria-hidden="true"></i> To-do</h2>
+          {clearDoneButton}
+        </div>
+      )}
 
       <div className="todo-panel" role="list">
         <div className="todo-add" role="listitem">

@@ -15,6 +15,28 @@
 // four days is the compromise between a windowsill basil and a garden shrub.
 const TODAY_THIRSTY_DEFAULT_DAYS = 4;
 
+// This is the home screen, so its job is "what's the next thing", not "here is
+// everything". Each list stops here and hands off to the tab that owns the
+// full version. The section COUNTS stay honest (they show the real total), and
+// so does the AI day summary, which still reads every item.
+const TODAY_SECTION_CAP = 3;
+
+// The hand-off row under a capped list. Says how many are hidden and where
+// they live — never a bare "more".
+//
+// The prop is `onOpen`, not `onClick`: this is a component, and the a11y audit
+// reads a literal onClick on a non-lowercase tag as a div someone made
+// clickable. It renders a real <button>.
+function GcTodayMoreRow({ count, label, onOpen }) {
+  if (count <= 0) return null;
+  return (
+    <button className="today-more" onClick={onOpen}>
+      <span>+{count} more {label}</span>
+      <i className="bi bi-chevron-right" aria-hidden="true"></i>
+    </button>
+  );
+}
+
 const TODAY_SUMMARY_SYSTEM =
   "You are Sprout, the user's gardening companion. From the due tasks and local weather below, " +
   "write a SHORT plan for today: 3-5 bullet points, under 120 words, most important first. " +
@@ -192,7 +214,7 @@ function TodayView({ onNavigate }) {
               <span className="today-count">{attentionCount}</span>
             </h3>
 
-            {dueRoutines.map((r) => (
+            {dueRoutines.slice(0, TODAY_SECTION_CAP).map((r) => (
               <div key={`r${r.id}`} role="listitem" className="today-row">
                 <button className="today-row-main" onClick={() => onNavigate("routines", { itemId: r.id })}>
                   <i className="bi bi-arrow-repeat" aria-hidden="true"></i>
@@ -215,7 +237,13 @@ function TodayView({ onNavigate }) {
               </div>
             ))}
 
-            {urgentTodos.map((t) => (
+            <GcTodayMoreRow
+              count={dueRoutines.length - TODAY_SECTION_CAP}
+              label={dueRoutines.length - TODAY_SECTION_CAP === 1 ? "routine due" : "routines due"}
+              onOpen={() => onNavigate("routines")}
+            />
+
+            {urgentTodos.slice(0, TODAY_SECTION_CAP).map((t) => (
               <div key={`t${t.id}`} role="listitem" className="today-row">
                 <button className="today-row-main" onClick={() => onNavigate("todos")}>
                   <i className="bi bi-check2-square" aria-hidden="true"></i>
@@ -239,6 +267,12 @@ function TodayView({ onNavigate }) {
                 </button>
               </div>
             ))}
+
+            <GcTodayMoreRow
+              count={urgentTodos.length - TODAY_SECTION_CAP}
+              label={urgentTodos.length - TODAY_SECTION_CAP === 1 ? "to-do" : "to-dos"}
+              onOpen={() => onNavigate("todos")}
+            />
           </section>
         )}
 
@@ -248,7 +282,7 @@ function TodayView({ onNavigate }) {
               <i className="bi bi-droplet" aria-hidden="true"></i> Thirsty plants
               <span className="today-count">{thirsty.length}</span>
             </h3>
-            {thirsty.map(({ plant, interval, days }) => (
+            {thirsty.slice(0, TODAY_SECTION_CAP).map(({ plant, interval, days }) => (
               <div key={`p${plant.id}`} role="listitem" className="today-row">
                 <button className="today-row-main" onClick={() => onNavigate("garden", { itemId: plant.id })}>
                   {plant.coverThumb ? (
@@ -275,6 +309,12 @@ function TodayView({ onNavigate }) {
                 </button>
               </div>
             ))}
+
+            <GcTodayMoreRow
+              count={thirsty.length - TODAY_SECTION_CAP}
+              label={thirsty.length - TODAY_SECTION_CAP === 1 ? "thirsty plant" : "thirsty plants"}
+              onOpen={() => onNavigate("garden")}
+            />
           </section>
         )}
 

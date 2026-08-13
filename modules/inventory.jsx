@@ -125,6 +125,9 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
   const [busy, setBusy] = useState(false); // label analysis in flight
   const [error, setError] = useState("");
   const [pendingActions, setPendingActions] = useState([]);
+  // Product info is long AI prose, so it starts collapsed — except right after
+  // a scan, when reading it IS the reason the photo was taken.
+  const [productOpen, setProductOpen] = useState(false);
   const [form, setForm] = useState(toolFormFrom(tool));
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera
@@ -194,6 +197,7 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
         ...withPhoto,
         productInfo: info || "No product details could be read from this photo.",
       });
+      setProductOpen(true); // the user just asked for this text — show it
       onChanged();
 
       // Photo analysis for THIS item may only ever update THIS item — force
@@ -207,6 +211,7 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
       // Keep the photo; just record that the analysis didn't happen.
       if (withPhoto) {
         await updateTool({ ...withPhoto, productInfo: "Photo saved (AI analysis unavailable)." }).catch(() => {});
+        setProductOpen(true); // say so where the answer was going to appear
         onChanged();
       }
       setError(err.message);
@@ -259,40 +264,55 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
           <div className="detail-hero placeholder"><i className="bi bi-tools" aria-hidden="true"></i></div>
         )}
 
-        <div className="fact-chips">
+        {/* How many left and what state it's in — the two facts you open an
+            inventory item to check. The other seven chips moved into Details. */}
+        <div className="detail-lede">
           <span className="chip qty-chip">
             <button className="qty-btn" onClick={() => bumpQuantity(-1)} title="One less" aria-label="One less"><i className="bi bi-dash" aria-hidden="true"></i></button>
             <span><i className="bi bi-boxes" aria-hidden="true"></i> {tool.quantity}</span>
             <button className="qty-btn" onClick={() => bumpQuantity(1)} title="One more" aria-label="One more"><i className="bi bi-plus" aria-hidden="true"></i></button>
           </span>
-          {tool.brand && <span className="chip"><i className="bi bi-award" aria-hidden="true"></i> {tool.brand}</span>}
-          {tool.condition && <span className="chip"><i className="bi bi-heart-pulse" aria-hidden="true"></i> {tool.condition}</span>}
-          {tool.location && <span className="chip"><i className="bi bi-geo-alt" aria-hidden="true"></i> {tool.location}</span>}
-          {tool.purchaseDate && <span className="chip"><i className="bi bi-bag" aria-hidden="true"></i> bought {tool.purchaseDate}</span>}
-          {tool.price != null && tool.price !== "" && <span className="chip"><i className="bi bi-cash" aria-hidden="true"></i> {tool.price}</span>}
-          <span className="chip"><i className="bi bi-hand-index" aria-hidden="true"></i> used {timeAgo(tool.lastUsed)}</span>
-          <span className="chip"><i className="bi bi-calendar3" aria-hidden="true"></i> added {tool.createdAt ? timeAgo(tool.createdAt) : "unknown"}</span>
-          <TagChips tags={tool.tags} />
+          {tool.condition && (
+            <span className="detail-lede-sub"><i className="bi bi-heart-pulse" aria-hidden="true"></i> {tool.condition}</span>
+          )}
         </div>
         {tool.notes && <div className="item-notes"><i className="bi bi-journal-text" aria-hidden="true"></i> {tool.notes}</div>}
 
+        {/* One primary action (Mark used), one secondary (Add photo), the rest
+            behind ⋯ — same shape as a plant's page, so the two detail screens
+            teach each other. */}
         <div className="item-quick-actions">
           <button className="btn small" onClick={markUsed}><i className="bi bi-hand-index" aria-hidden="true"></i> Mark used</button>
-          <button className="btn small" onClick={() => cameraInputRef.current.click()} disabled={busy}>
-            <i className="bi bi-camera" aria-hidden="true"></i> {busy ? "Analyzing…" : "Camera"}
-          </button>
-          <button className="btn small" onClick={() => fileInputRef.current.click()} disabled={busy}>
-            <i className="bi bi-images" aria-hidden="true"></i> Gallery
-          </button>
-          {tool.photoThumb && (
-            <button className="btn btn-ghost small" onClick={() => setConfirmPhotoRemove(true)}>
-              <i className="bi bi-x-circle" aria-hidden="true"></i> Remove photo
-            </button>
-          )}
-          <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout</button>
-          <button className="btn btn-ghost small" onClick={() => onNavigate("codex", { query: tool.name })}>
-            <i className="bi bi-book" aria-hidden="true"></i> Codex
-          </button>
+          <GcOverflowMenu
+            id={`tool-photo-sheet-${tool.id}`}
+            className="btn btn-ghost small"
+            title="Add a photo"
+            label={busy ? "Analyzing…" : "Add photo"}
+            icon="bi-camera"
+            disabled={busy}
+            items={[
+              // Still two inputs and two code paths — only the camera one
+              // carries capture="environment"; the sheet just picks which.
+              { key: "camera", icon: "bi-camera", label: "Take a photo", onClick: () => cameraInputRef.current.click() },
+              { key: "gallery", icon: "bi-images", label: "Choose from gallery", onClick: () => fileInputRef.current.click() },
+            ]}
+          />
+          <GcOverflowMenu
+            id={`tool-more-sheet-${tool.id}`}
+            className="btn btn-ghost small"
+            title="More actions"
+            items={[
+              { key: "ask", icon: "bi-chat-dots", label: "Ask Sprout", onClick: askSprout },
+              { key: "codex", icon: "bi-book", label: "Look up in Codex", onClick: () => onNavigate("codex", { query: tool.name }) },
+              tool.photoThumb && {
+                key: "removephoto",
+                icon: "bi-x-circle",
+                label: "Remove photo",
+                danger: true,
+                onClick: () => setConfirmPhotoRemove(true),
+              },
+            ]}
+          />
         </div>
         <input
           ref={cameraInputRef}
@@ -319,15 +339,35 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
           }}
         />
 
+        <GcDisclosure id={`tool-details-${tool.id}`} label="Details" icon="bi-info-circle">
+          <div className="fact-chips">
+            {tool.brand && <span className="chip"><i className="bi bi-award" aria-hidden="true"></i> {tool.brand}</span>}
+            {tool.location && <span className="chip"><i className="bi bi-geo-alt" aria-hidden="true"></i> {tool.location}</span>}
+            {tool.purchaseDate && <span className="chip"><i className="bi bi-bag" aria-hidden="true"></i> bought {tool.purchaseDate}</span>}
+            {tool.price != null && tool.price !== "" && <span className="chip"><i className="bi bi-cash" aria-hidden="true"></i> {tool.price}</span>}
+            <span className="chip"><i className="bi bi-hand-index" aria-hidden="true"></i> used {timeAgo(tool.lastUsed)}</span>
+            <span className="chip"><i className="bi bi-calendar3" aria-hidden="true"></i> added {tool.createdAt ? timeAgo(tool.createdAt) : "unknown"}</span>
+            <TagChips tags={tool.tags} />
+          </div>
+        </GcDisclosure>
+
         {busy && <p className="empty-hint" role="status" aria-live="polite">Reading the label…</p>}
         {tool.productInfo && (
-          <div className="product-info">
-            <h3><i className="bi bi-upc-scan" aria-hidden="true"></i> Product info</h3>
+          // The AI's read of the label can run to a screenful. Behind a named
+          // disclosure it stops being the page; the card box around it went too,
+          // since the disclosure already gives it a heading and an edge.
+          <GcDisclosure
+            id={`tool-product-info-${tool.id}`}
+            label="Product info"
+            icon="bi-upc-scan"
+            open={productOpen}
+            onToggle={setProductOpen}
+          >
             <div
               className="product-info-body"
               dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(tool.productInfo) }}
             />
-          </div>
+          </GcDisclosure>
         )}
       </div>
 

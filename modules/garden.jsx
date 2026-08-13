@@ -316,12 +316,20 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
     }
   }
 
-  const facts = [
-    { icon: "bi-geo-alt", label: plant.location || "no location set" },
+  // "Last watered" and "where is it" are the two facts that answer the only
+  // question this page is really asked — does this plant need me right now.
+  // They lead. Everything else is reference material and lives one tap down,
+  // in Details, rather than as another row of chips under the photo.
+  const secondaryFacts = [
+    plant.location ? null : { icon: "bi-geo-alt", label: "no location set" },
     { icon: "bi-calendar3", label: `planted ${plant.plantingDate || "unknown"}` },
-    { icon: "bi-droplet", label: `watered ${timeAgo(plant.lastWatered)}` },
     { icon: "bi-flower2", label: `fertilized ${timeAgo(plant.lastFertilized)}` },
-  ];
+  ].filter(Boolean);
+
+  const historyEntries = (plant.photoHistory || []).slice().reverse(); // newest first
+  // A log of three or fewer is not a wall — leave it open. Past that it is the
+  // longest thing on the page, so it starts closed with its count on the label.
+  const historyStartsOpen = historyEntries.length <= 3;
 
   return (
     <div className="tab-panel">
@@ -350,27 +358,51 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
           <div className="detail-hero placeholder"><i className="bi bi-flower3" aria-hidden="true"></i></div>
         )}
 
-        <div className="fact-chips">
-          {facts.map((f, i) => (
-            <span key={i} className="chip"><i className={`bi ${f.icon}`} aria-hidden="true"></i> {f.label}</span>
-          ))}
-          <TagChips tags={plant.tags} />
+        <div className="detail-lede">
+          <span className="detail-lede-main">
+            <i className="bi bi-droplet" aria-hidden="true"></i> Watered {timeAgo(plant.lastWatered)}
+          </span>
+          {plant.location && (
+            <span className="detail-lede-sub"><i className="bi bi-geo-alt" aria-hidden="true"></i> {plant.location}</span>
+          )}
         </div>
         {plant.notes && <div className="item-notes"><i className="bi bi-journal-text" aria-hidden="true"></i> {plant.notes}</div>}
 
+        {/* One primary action (Watered), one secondary (Add photo), the rest
+            behind ⋯. Six equal-weight buttons meant none of them was primary,
+            and the two most-used ones were the hardest to hit. */}
         <div className="item-quick-actions">
           <button className="btn small" onClick={markWatered}><i className="bi bi-droplet" aria-hidden="true"></i> Watered</button>
-          <button className="btn small" onClick={markFertilized}><i className="bi bi-flower2" aria-hidden="true"></i> Fertilized</button>
-          <button className="btn small" onClick={() => cameraInputRef.current.click()} disabled={busy}>
-            <i className="bi bi-camera" aria-hidden="true"></i> {busy ? "Analyzing…" : "Camera"}
-          </button>
-          <button className="btn small" onClick={() => fileInputRef.current.click()} disabled={busy}>
-            <i className="bi bi-images" aria-hidden="true"></i> Gallery
-          </button>
-          <button className="btn btn-ghost small" onClick={askSprout}><i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout</button>
-          <button className="btn btn-ghost small" onClick={() => onNavigate("codex", { query: plant.name })}>
-            <i className="bi bi-book" aria-hidden="true"></i> Codex
-          </button>
+          <GcOverflowMenu
+            id={`plant-photo-sheet-${plant.id}`}
+            className="btn btn-ghost small"
+            title="Add a photo"
+            label={busy ? "Analyzing…" : "Add photo"}
+            icon="bi-camera"
+            disabled={busy}
+            items={[
+              // Two hidden inputs, two code paths: only the camera one carries
+              // capture="environment". Merging the BUTTONS doesn't merge those.
+              { key: "camera", icon: "bi-camera", label: "Take a photo", onClick: () => cameraInputRef.current.click() },
+              { key: "gallery", icon: "bi-images", label: "Choose from gallery", onClick: () => fileInputRef.current.click() },
+            ]}
+          />
+          <GcOverflowMenu
+            id={`plant-more-sheet-${plant.id}`}
+            className="btn btn-ghost small"
+            title="More actions"
+            items={[
+              { key: "fertilized", icon: "bi-flower2", label: "Mark fertilized", onClick: markFertilized },
+              photoEntries.length >= 2 && {
+                key: "compare",
+                icon: "bi-layout-split",
+                label: "Compare photos",
+                onClick: () => setComparing(true),
+              },
+              { key: "ask", icon: "bi-chat-dots", label: "Ask Sprout", onClick: askSprout },
+              { key: "codex", icon: "bi-book", label: "Look up in Codex", onClick: () => onNavigate("codex", { query: plant.name }) },
+            ]}
+          />
         </div>
         <input
           ref={cameraInputRef}
@@ -397,6 +429,15 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
           }}
         />
 
+        <GcDisclosure id={`plant-details-${plant.id}`} label="Details" icon="bi-info-circle">
+          <div className="fact-chips">
+            {secondaryFacts.map((f, i) => (
+              <span key={i} className="chip"><i className={`bi ${f.icon}`} aria-hidden="true"></i> {f.label}</span>
+            ))}
+            <TagChips tags={plant.tags} />
+          </div>
+        </GcDisclosure>
+
         {linkedRoutines.length > 0 && (
           <div className="linked-section">
             <h3>Care routines</h3>
@@ -412,49 +453,52 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
           </div>
         )}
 
-        <h3>History</h3>
-        {photoEntries.length >= 2 && (
-          <button className="btn btn-ghost small compare-open" onClick={() => setComparing(true)}>
-            <i className="bi bi-layout-split" aria-hidden="true"></i> Compare photos
-          </button>
-        )}
-        {(!plant.photoHistory || plant.photoHistory.length === 0) && (
-          <p className="empty-hint">No log entries yet — tap "Add photo" above to start one.</p>
-        )}
-        <div className="log-list">
-          {(plant.photoHistory || [])
-            .slice()
-            .reverse()
-            .map((p, i) => (
-              <div key={i} className="log-item">
-                {p.imageThumb && (
-                  // A bare <img onClick> has no keyboard path — role=button +
-                  // tabIndex + Enter/Space make it operable without changing
-                  // the element (a wrapping <button> here would pick up
-                  // default button chrome from styles.css we don't own).
-                  <img
-                    src={p.imageThumb}
-                    alt={p.analysis || "Plant photo"}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setLightbox({ src: p.imageThumb, caption: p.analysis })}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        setLightbox({ src: p.imageThumb, caption: p.analysis });
-                      }
-                    }}
-                  />
-                )}
-                <div>
-                  <div className="log-date">
-                    {new Date(p.date).toLocaleDateString()} <span className={`log-kind ${p.kind || "photo"}`}>{p.kind || "photo"}</span>
+        {/* The single longest thing on this page. Collapsed once it passes a
+            few entries, with the count on the control so closing it never
+            hides the fact that there IS a history. */}
+        <GcDisclosure
+          id={`plant-history-${plant.id}`}
+          label="History"
+          icon="bi-clock-history"
+          count={historyEntries.length}
+          defaultOpen={historyStartsOpen}
+        >
+          {historyEntries.length === 0 ? (
+            <p className="empty-hint">No log entries yet — tap "Add photo" above to start one.</p>
+          ) : (
+            <div className="log-list">
+              {historyEntries.map((p, i) => (
+                <div key={i} className="log-item">
+                  {p.imageThumb && (
+                    // A bare <img onClick> has no keyboard path — role=button +
+                    // tabIndex + Enter/Space make it operable without changing
+                    // the element (a wrapping <button> here would pick up
+                    // default button chrome from styles.css we don't own).
+                    <img
+                      src={p.imageThumb}
+                      alt={p.analysis || "Plant photo"}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setLightbox({ src: p.imageThumb, caption: p.analysis })}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setLightbox({ src: p.imageThumb, caption: p.analysis });
+                        }
+                      }}
+                    />
+                  )}
+                  <div>
+                    <div className="log-date">
+                      {new Date(p.date).toLocaleDateString()} <span className={`log-kind ${p.kind || "photo"}`}>{p.kind || "photo"}</span>
+                    </div>
+                    <div className="log-text">{p.analysis}</div>
                   </div>
-                  <div className="log-text">{p.analysis}</div>
                 </div>
-              </div>
-            ))}
-        </div>
+              ))}
+            </div>
+          )}
+        </GcDisclosure>
       </div>
 
       {lightbox && (

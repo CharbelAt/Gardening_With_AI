@@ -45,6 +45,9 @@
 <script type="text/babel" data-presets="react" src="./modules/inventory.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/routines.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/todos.jsx"></script>
+<!-- tasks.jsx hosts the merged Routines + To-do tab, so it must load after
+     both of the views it embeds. -->
+<script type="text/babel" data-presets="react" src="./modules/tasks.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/garden.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/codex.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/search.jsx"></script>

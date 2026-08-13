@@ -3,25 +3,33 @@
 // global scope, no import/export. Keeps the whole app deployable by just
 // editing files and committing to GitHub Pages (no build step).
 //
-// Navigation model: a persistent bottom bar switches the main view
-// (chat/garden/routines/todos/inventory/codex). Voice input is a tap-to-talk
+// Navigation model: a persistent bottom bar switches the main view between the
+// five tabs (today/garden/chat/tasks/inventory). Voice input is a tap-to-talk
 // toggle in the chat composer (VoiceButton in voice.jsx: tap to open the mic,
 // tap again to close it and append the transcript) — there is no separate
 // call view or call mode. Cross-module links (e.g. a plant's "Ask
 // Sprout" button, a routine's linked plant, an item's Codex button) go through
 // navigate(view, {itemId, draft, query}).
 //
-// "today" and "search" are deliberately NOT bottom-nav items: six tabs is
-// already the most that fits a 360px phone. Today is reachable from the header
-// (and can be the landing view, see LS_LANDING_VIEW), search from the header
-// magnifier — both are app-wide, not one more peer section.
+// Two views have no tab of their own and that is deliberate:
+//   codex  — a reference library you arrive at from something else (header
+//            search, an item page's Codex button, Settings › Knowledge
+//            library), never a destination you open cold.
+//   search — an app-wide overlay from the header magnifier, not a section.
+//
+// "routines" and "todos" are still accepted as view keys for ever: they are
+// legacy aliases for the Tasks tab (LEGACY_VIEW_ALIASES/resolveView in
+// shared-ui.jsx) and resolve to view "tasks" plus the section to preselect, so
+// every existing deep link — garden.jsx's linked routines, today.jsx's rows,
+// search.jsx's results — keeps landing exactly where it used to.
 
 function App() {
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [view, setView] = useState("chat"); // chat | garden | routines | todos | inventory | codex
+  const [view, setView] = useState("chat"); // today | garden | chat | tasks | inventory | codex
   const [navItemId, setNavItemId] = useState(null); // open this item's detail page on view mount
+  const [tasksSection, setTasksSection] = useState(null); // "routines" | "todos" from a legacy link; null = leave Tasks where the user left it
   const [chatDraft, setChatDraft] = useState(""); // prefilled composer text from "Ask Sprout" buttons
   const [codexQuery, setCodexQuery] = useState(""); // prefilled codex search from item "Codex" buttons
   const [dueCount, setDueCount] = useState(0);
@@ -61,10 +69,11 @@ function App() {
     refreshDueCount();
   }, [view]);
 
-  // "Refresh context" (chat header): re-reads IndexedDB, bumps the context
+  // "What can Sprout see?" (Settings): re-reads IndexedDB, bumps the context
   // revision, and shows the user the counts the AI will be given. The prompt
   // snapshot is rebuilt per request anyway — this exists so the user can VERIFY
-  // what Sprout can see instead of taking its word for it.
+  // what Sprout can see instead of taking its word for it, which is why it
+  // lives in Settings rather than costing a permanent header icon.
   async function refreshAiContext() {
     const revision = bumpContextRevision();
     const summary = await buildContextSummary();
@@ -73,10 +82,14 @@ function App() {
   }
 
   function navigate(nextView, opts = {}) {
+    // Legacy keys ("routines"/"todos") resolve to the tab that absorbed them
+    // plus the section to open on; everything else passes straight through.
+    const target = resolveView(nextView);
     setNavItemId(opts.itemId != null ? opts.itemId : null);
     if (opts.draft) setChatDraft(opts.draft);
     setCodexQuery(opts.query || ""); // cleared unless a Codex link set one
-    setView(nextView);
+    setTasksSection(target.section);
+    setView(target.view);
   }
 
   // Initial load: run the one-time migration, figure out which chat is
@@ -179,26 +192,15 @@ function App() {
   return (
     <div className={`app ${theme === "dark" ? "dark" : ""}`}>
       <header className="app-header">
+        {/* Two jobs left in the header: switch conversations (chat only) on the
+            left, search and settings on the right. Today became a tab, and the
+            context peek moved into Settings — it verifies something the app
+            already does on every request, so it never earned a permanent icon
+            next to the things you tap all day. */}
         <div className="header-side">
-          {/* Today: available from every view — it's the "what now?" screen,
-              not a section, so it doesn't belong in the bottom nav. */}
-          <button
-            className={view === "today" ? "icon-btn active" : "icon-btn"}
-            onClick={() => navigate(view === "today" ? "chat" : "today")}
-            title="Today"
-            aria-label="Today"
-            aria-pressed={view === "today"}
-          >
-            <i className="bi bi-sun" aria-hidden="true"></i>
-          </button>
           {view === "chat" && (
             <button className="icon-btn" onClick={() => setShowChatList(true)} title="Chats" aria-label="Chats">
               <i className="bi bi-chat-square-text" aria-hidden="true"></i>
-            </button>
-          )}
-          {view === "chat" && (
-            <button className="icon-btn" onClick={refreshAiContext} title="Refresh what Sprout can see" aria-label="Refresh what Sprout can see">
-              <i className="bi bi-arrow-repeat" aria-hidden="true"></i>
             </button>
           )}
         </div>
@@ -234,8 +236,9 @@ function App() {
         )}
         {view === "garden" && <GardenView initialId={navItemId} onNavigate={navigate} />}
         {view === "inventory" && <InventoryView initialId={navItemId} onNavigate={navigate} />}
-        {view === "routines" && <RoutinesView initialId={navItemId} onNavigate={navigate} />}
-        {view === "todos" && <TodosView onNavigate={navigate} />}
+        {view === "tasks" && (
+          <TasksView initialId={navItemId} initialSection={tasksSection} onNavigate={navigate} />
+        )}
         {view === "today" && <TodayView onNavigate={navigate} />}
         {view === "codex" && <CodexView initialQuery={codexQuery} onNavigate={navigate} />}
       </main>
@@ -287,6 +290,16 @@ function App() {
           onShowHelp={() => {
             setShowSettings(false);
             setShowHelp(true);
+          }}
+          onShowContext={() => {
+            // Same handoff as onShowHelp: the peek is its own dialog, and two
+            // stacked sheets read as a bug rather than as depth.
+            setShowSettings(false);
+            refreshAiContext();
+          }}
+          onOpenCodex={() => {
+            setShowSettings(false);
+            navigate("codex");
           }}
           theme={theme}
           onThemeChange={setTheme}

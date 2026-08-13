@@ -39,6 +39,39 @@ function CodexSources({ sources }) {
   );
 }
 
+// Bodies past this many characters render clamped. Short entries stay whole,
+// so "Read more" only ever appears where it earns its place.
+const CODEX_CLAMP_CHARS = 200;
+
+// A codex body that opens rather than filling the screen. The text is clamped
+// with CSS, not cut from the string, so find-in-page, selection and copy still
+// see the whole entry — only its HEIGHT is capped. Sources ride with the body:
+// they're a citation for text you can't read yet.
+function GcCodexBody({ id, body, sources, asHtml }) {
+  const [open, setOpen] = useState(false);
+  const long = (body || "").length > CODEX_CLAMP_CHARS;
+  const clamped = long && !open;
+
+  return (
+    <React.Fragment>
+      <div id={id} className={clamped ? "gc-clamp" : undefined}>
+        {asHtml ? (
+          <div className="codex-body" dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(body) }} />
+        ) : (
+          <p className="codex-body">{body}</p>
+        )}
+      </div>
+      {!clamped && <CodexSources sources={sources} />}
+      {long && (
+        <button className="gc-readmore" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls={id}>
+          {open ? "Show less" : "Read more"}
+          <i className={open ? "bi bi-chevron-up" : "bi bi-chevron-down"} aria-hidden="true"></i>
+        </button>
+      )}
+    </React.Fragment>
+  );
+}
+
 function CodexKindBadge({ entry }) {
   if (!entry.kind || entry.kind === "topic") return null;
   const icon = entry.kind === "plant" ? "bi-flower3" : "bi-tools";
@@ -169,8 +202,7 @@ function CodexView({ initialQuery, onNavigate }) {
             <h3>
               {e.title} <CodexKindBadge entry={e} />
             </h3>
-            <div dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(e.body) }} />
-            <CodexSources sources={e.sources} />
+            <GcCodexBody id={`codex-saved-body-${e.id}`} body={e.body} sources={e.sources} asHtml />
             <div className="codex-entry-actions">
               <button className="btn btn-ghost small" onClick={() => askSprout(e.title)}>
                 <i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout
@@ -188,7 +220,7 @@ function CodexView({ initialQuery, onNavigate }) {
         {filteredBuiltIn.map((e) => (
           <div key={e.title} className="codex-entry">
             <h3>{e.title}</h3>
-            <p>{e.body}</p>
+            <GcCodexBody id={`codex-builtin-body-${e.title.replace(/\W+/g, "-")}`} body={e.body} />
             <div className="codex-entry-actions">
               <button className="btn btn-ghost small" onClick={() => askSprout(e.title)}>
                 <i className="bi bi-chat-dots" aria-hidden="true"></i> Ask Sprout

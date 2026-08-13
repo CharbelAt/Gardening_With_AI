@@ -235,7 +235,11 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
   );
 }
 
-function RoutinesView({ initialId, onNavigate }) {
+// `renderHeader` (optional): when this view is embedded in the Tasks tab the
+// host owns the header, and calls back with our own action button to slot into
+// it — see tasks.jsx. Absent, the view renders its own header and works
+// standalone exactly as before.
+function RoutinesView({ initialId, onNavigate, renderHeader }) {
   const [routines, setRoutines] = useState([]);
   const [selectedId, setSelectedId] = useState(initialId || null);
   const [showAdd, setShowAdd] = useState(false);
@@ -247,6 +251,13 @@ function RoutinesView({ initialId, onNavigate }) {
   useEffect(() => {
     refresh();
   }, []);
+
+  // Inside the Tasks tab this view no longer remounts for every navigation, so
+  // a deep link that arrives while it is already on screen (a search result, a
+  // plant's linked routine) has to be followed here rather than only at mount.
+  useEffect(() => {
+    if (initialId != null) setSelectedId(initialId);
+  }, [initialId]);
 
   const selected = routines.find((r) => r.id === selectedId) || null;
   const visible = activeTag ? routines.filter((r) => (r.tags || []).includes(activeTag)) : routines;
@@ -262,12 +273,20 @@ function RoutinesView({ initialId, onNavigate }) {
     );
   }
 
+  const addButton = (
+    <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add routine" aria-label="Add routine"><i className="bi bi-plus-lg" aria-hidden="true"></i></button>
+  );
+
   return (
     <div className="tab-panel">
-      <div className="view-header">
-        <h2><i className="bi bi-arrow-repeat" aria-hidden="true"></i> Routines</h2>
-        <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add routine" aria-label="Add routine"><i className="bi bi-plus-lg" aria-hidden="true"></i></button>
-      </div>
+      {renderHeader ? (
+        renderHeader(addButton)
+      ) : (
+        <div className="view-header">
+          <h2><i className="bi bi-arrow-repeat" aria-hidden="true"></i> Routines</h2>
+          {addButton}
+        </div>
+      )}
       <TagFilterBar items={routines} activeTag={activeTag} onSelect={setActiveTag} />
       <div className="item-grid">
         {routines.length === 0 && (
