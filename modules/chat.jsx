@@ -132,6 +132,31 @@ function FollowupChips({ suggestions, onPick, disabled }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Memoized thread children — the fix for typing lag.
+//
+// The composer is a fully controlled input (it has to be: characters must
+// appear the instant they're typed), so every keystroke sets ChatTab state and
+// re-renders its whole subtree. Each MessageBubble runs marked.parse +
+// DOMPurify.sanitize over its text on every render, so a 60-message thread was
+// doing 60 markdown parses PER CHARACTER — measured at ~217ms/keystroke on a
+// desktop, and far worse through Babel-standalone's output on a phone. That is
+// the "delay between pressing a key and seeing the letter" users reported.
+//
+// React.memo skips those renders: a bubble's props only change when its own
+// message does. It only works while the props stay referentially stable, which
+// is why onRegenerate/onPick below come from caches and useCallback instead of
+// inline arrows — a fresh arrow every render fails memo's shallow compare and
+// puts the whole cost straight back.
+//
+// Wrapped HERE rather than at the definition sites: MessageBubble belongs to
+// shared-ui.jsx, and FollowupChips is a plain global other passes may render —
+// React.memo returns an object, not a function, so rebinding those names would
+// change what every other caller sees. (shared-ui.jsx loads before chat.jsx in
+// index.html, so MessageBubble is already defined at this point.)
+const MemoMessageBubble = React.memo(MessageBubble);
+const MemoFollowupChips = React.memo(FollowupChips);
+
 function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftConsumed, onFirstUserMessage }) {
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
@@ -139,7 +164,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
   const [pendingPhoto, setPendingPhoto] = useState(null); // { dataUrl, base64, caption }
   const [regeneratingId, setRegeneratingId] = useState(null);
   const [voice, setVoice] = useState({ state: "idle", seconds: 0, hint: "", live: "" });
-  const [appliedNote, setAppliedNote] = useState(""); // "✓ what actually got saved" toast
+  const [appliedNote, setAppliedNote] = useState(null); // { text, ok } — "✓ what actually got saved" toast
   const appliedTimer = useRef(null);
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera (capture attr)
@@ -175,10 +200,17 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
   // Visible proof of writes: shows exactly what was saved (from the app's own
   // apply pipeline, not the AI's claims), then fades.
   function flashApplied(res) {
-    if (!res || !res.applied || res.applied.length === 0) return;
-    setAppliedNote(res.applied.join(" · "));
+    if (!res) return;
+    const applied = (res.applied || []).join(" · ");
+    // `skipped` is being added to handleAiActions by a parallel pass — read it
+    // optionally so this keeps working whether or not it lands, and so a
+    // silently-dropped action still shows up somewhere the user can see it.
+    const skipped = res.skipped && res.skipped.length ? `skipped: ${res.skipped.join(" · ")}` : "";
+    const text = [applied, skipped].filter(Boolean).join(" — ");
+    if (!text) return;
+    setAppliedNote({ text, ok: !!applied });
     clearTimeout(appliedTimer.current);
-    appliedTimer.current = setTimeout(() => setAppliedNote(""), 6000);
+    appliedTimer.current = setTimeout(() => setAppliedNote(null), 6000);
   }
 
   // Dictation result: appended to whatever is already typed (never sent for
@@ -254,9 +286,14 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     sendMessage(input, true);
   }
 
-  async function regenerateMessage(msg) {
-    const idx = messages.findIndex((m) => m.id === msg.id);
+  // Takes an id, not the message object: the handler that calls this is cached
+  // for the life of the message (see regenerateHandlerFor), so a captured
+  // object would be the version from whichever render created the closure —
+  // stale text after an earlier regenerate. The id never goes stale.
+  async function regenerateMessage(id) {
+    const idx = messages.findIndex((m) => m.id === id);
     if (idx <= 0) return;
+    const msg = messages[idx];
     const historyUpTo = messages.slice(0, idx); // everything before this reply, ending in the user's message
     setRegeneratingId(msg.id);
     setError("");
@@ -292,7 +329,13 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     setError("");
     resizeImageToDataUrl(file).then((dataUrl) => {
       const [, base64] = dataUrl.split(",");
-      setPendingPhoto({ dataUrl, base64, caption: "What's going on with this plant?" });
+      // Empty caption on purpose. This used to prefill "What's going on with
+      // this plant?", which put a question the user never asked into their own
+      // transcript and told the model the subject was a plant — wrong for the
+      // equipment, product labels and packaging people actually photograph.
+      // The textarea below is an optional note; the vision prompt handles a
+      // missing caption on its own.
+      setPendingPhoto({ dataUrl, base64, caption: "" });
     });
   }
 
@@ -303,8 +346,14 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     setError("");
     setBusy(true);
     try {
-      const text = caption || "What's going on with this plant?";
-      if (messages.length === 0) onFirstUserMessage(text);
+      // Whatever the user actually wrote, and nothing else — an empty string is
+      // a valid caption. buildChatVisionPrompt handles a missing one without
+      // assuming the photo is of a plant.
+      const text = (caption || "").trim();
+      // The auto-title falls back to a neutral word rather than the caption:
+      // titling a chat "" (autoTitleFromText of an empty string) would leave
+      // the chat list with a blank row.
+      if (messages.length === 0) onFirstUserMessage(text || "Photo");
       const userMsg = {
         chatId,
         role: "user",
@@ -318,10 +367,13 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
 
       // The vision prompt includes the user's plant list + write-back
       // conventions, so a photo can update a plant's record just like text can.
+      // `messages` is this render's value — the thread as it stood BEFORE this
+      // photo — which is exactly the context the reply has to continue from,
+      // so a photo sent mid-conversation no longer answers as if from nowhere.
       const data = await apiFetch("/api/vision", {
         imageBase64: base64,
         mimeType: "image/jpeg",
-        prompt: await buildChatVisionPrompt(text),
+        prompt: await buildChatVisionPrompt(text, messages),
       });
       const { cleanText, actions } = extractActions(data.reply || "");
       const { cleanText: afterStatus } = extractStatus(cleanText);
@@ -345,27 +397,76 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     }
   }
 
+  // ---- stable handlers for the memoized children --------------------------
+  // Everything below exists so React.memo can actually bail out. The handlers
+  // a bubble or a chip receives must keep the same identity from render to
+  // render (memo compares props with ===), yet still act on THIS render's
+  // messages/busy/chatId. Reassigning the current closures onto a ref and
+  // calling through it gives both: frozen identity, live behaviour.
+  const latest = useRef({});
+  latest.current.sendMessage = sendMessage;
+  latest.current.regenerateMessage = regenerateMessage;
+
+  // One cached handler per message id. MessageBubble wires onRegenerate
+  // straight to onClick, so it's called with the click event — the message has
+  // to be bound here rather than passed as an argument by the bubble.
+  const regenHandlers = useRef(new Map());
+  function regenerateHandlerFor(id) {
+    let fn = regenHandlers.current.get(id);
+    if (!fn) {
+      fn = () => latest.current.regenerateMessage(id);
+      regenHandlers.current.set(id, fn);
+    }
+    return fn;
+  }
+
+  // Bounds the cache: drop handlers for messages that are no longer in the
+  // thread (switching chats swaps the whole list), so a long session can't leak
+  // one closure per message ever seen. Keyed on `messages`, which changes only
+  // when the thread does — never on a keystroke.
+  useEffect(() => {
+    const live = new Set(messages.map((m) => m.id));
+    regenHandlers.current.forEach((_, id) => {
+      if (!live.has(id)) regenHandlers.current.delete(id);
+    });
+  }, [messages]);
+
+  // `latest`, setInput and inputRef are all stable for the component's
+  // lifetime, so [] deps are correct: neither handler ever changes identity,
+  // which is what keeps MemoFollowupChips from re-rendering as you type.
+  const handleFollowupPick = useCallback((q) => latest.current.sendMessage(q), []);
+  // Starter phrases PREFILL rather than send: the first thing a new user taps
+  // shouldn't fire off a request they didn't get to read, and focusing the
+  // composer puts the caret (and the phone keyboard) where they can edit it.
+  const handleStarterPick = useCallback((text) => {
+    setInput(text);
+    inputRef.current?.focus();
+  }, []);
+
   return (
     <div className="tab-panel chat-tab">
       <div className="messages">
         {messages.length === 0 && (
           <div className="empty-state">
             <i className="bi bi-flower1" aria-hidden="true"></i>
-            <p>Ask a gardening question or send a photo of a plant to get started.</p>
-            <p className="empty-sub">Sprout knows your garden — try "what should I do today?"</p>
+            <p>Ask a gardening question or send a photo to get started.</p>
+            <p className="empty-sub">Sprout knows your garden — tap one to try it:</p>
+            {/* guide.jsx is optional (it may not be loaded yet, or at all), so
+                the app must render an empty chat fine without it. */}
+            {typeof GuideEmptyChatHints === "function" && <GuideEmptyChatHints onPick={handleStarterPick} />}
           </div>
         )}
         {messages.map((m) => (
           <React.Fragment key={m.id}>
-            <MessageBubble
+            <MemoMessageBubble
               msg={m}
-              onRegenerate={m.role === "assistant" ? () => regenerateMessage(m) : undefined}
+              onRegenerate={m.role === "assistant" ? regenerateHandlerFor(m.id) : undefined}
               regenerating={regeneratingId === m.id}
             />
             {m.id === lastAssistantId && !busy && (
-              <FollowupChips
+              <MemoFollowupChips
                 suggestions={m.suggestions}
-                onPick={(q) => sendMessage(q)}
+                onPick={handleFollowupPick}
                 disabled={busy}
               />
             )}
@@ -392,7 +493,10 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           <div className="error-banner" role="alert">{error}</div>
         ) : appliedNote ? (
           <div className="applied-banner" role="status" aria-live="polite">
-            <i className="bi bi-check2-circle" aria-hidden="true"></i> {appliedNote}
+            {/* A note that is ONLY skipped actions isn't a success — don't
+                greet it with a tick. */}
+            <i className={appliedNote.ok ? "bi bi-check2-circle" : "bi bi-info-circle"} aria-hidden="true"></i>{" "}
+            {appliedNote.text}
           </div>
         ) : null}
         <PendingActionsBanner actions={pendingActions} onResolve={setPendingActions} />
@@ -403,9 +507,9 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           <textarea
             rows={2}
             value={pendingPhoto.caption}
-            aria-label="Caption for this photo"
+            aria-label="Note for this photo (optional)"
             onChange={(e) => setPendingPhoto({ ...pendingPhoto, caption: e.target.value })}
-            placeholder="Ask something about this photo…"
+            placeholder="Add a note (optional)"
           />
           <div className="photo-preview-actions">
             <button className="btn" onClick={sendPendingPhoto} disabled={busy}>Send</button>

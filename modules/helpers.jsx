@@ -12,7 +12,33 @@ const LS_AI_WRITE_MODE = "gc_aiWriteMode"; // 'auto' | 'confirm'
 const LS_THEME = "gc_theme"; // 'dark' | 'light'
 const LS_DEFAULT_LOCATION = "gc_defaultLocation";
 const LS_LANDING_VIEW = "gc_landingView"; // "chat" (default) | "today"
-const CONTEXT_LIMIT = 24; // how many past messages get sent back to the AI as context — balance between context loss and free-tier token-per-minute budgets
+
+// ---------- how much of the conversation gets replayed to the AI ----------
+//
+// This used to be a flat count (CONTEXT_LIMIT = 24 messages), which IS what
+// "Sprout keeps losing the thread" actually was: 24 short turns is only a few
+// thousand characters, and everything agreed before that silently vanished
+// mid-conversation. It is now a BUDGET over the text that is really sent, so a
+// long thread of one-liners keeps far more history than a handful of long
+// ones — and the counts in the truncation notice stay true either way
+// (see sliceContextHistory / buildContextMessages).
+//
+// DELIBERATE COST TRADE-OFF (user: "give me max context, be extremely
+// generous"). The system prompt alone is already ~3.3k tokens, and Groq's free
+// tier meters roughly 8k tokens per MINUTE across the whole key. So a
+// full-budget request WILL 429 on the Groq entries of the server's model chain
+// and fall through to Cerebras / Gemini / Mistral, which have far more room:
+// those turns are a little slower, but the thread survives, which is the whole
+// point of this change. Lower CONTEXT_TOKEN_BUDGET to ~3000 if you would
+// rather stay inside Groq's minute and accept the memory loss instead.
+//
+// Image messages ride along as a short "[shared photo #N]" placeholder, never
+// the data URL, so photo-heavy threads cost almost nothing here.
+const CONTEXT_TOKEN_BUDGET = 48000; // ≈192k characters of replayed history
+const CONTEXT_MIN_MESSAGES = 12; // floor: always kept even if they blow the budget,
+// so a handful of enormous messages can never starve the window down to nothing
+const CONTEXT_MESSAGE_CAP = 400; // ceiling on message COUNT, independent of size
+const CONTEXT_LIMIT = CONTEXT_MESSAGE_CAP; // back-compat: the old global name still resolves
 
 // Predefined tag sets per module. Users can also type any custom tag, and the
 // AI can both use these and invent new ones (kept short + lowercase).
@@ -502,11 +528,18 @@ async function buildKnowledgeContext() {
 
   return (
     `\n\n=== LIVE GARDEN DATA — read from the app's database just now, ${deviceNow()} (snapshot #${contextRevision}) ===\n` +
-    "AUTHORITATIVE: this block is the single source of truth and OVERRIDES everything said earlier " +
-    "in this conversation, including your own earlier statements. If something is not listed here, " +
-    "it does not exist (deleted, or never added — do not resurrect it); where a value differs from " +
-    'what was said earlier, this block wins. Answer "what do I have" / "is X on my list" strictly ' +
-    "from it, never from memory.\n" +
+    // Scoped to FACTS on purpose. The blanket "overrides everything said
+    // earlier" this used to open with is true of values, but a model reads it
+    // as "ignore the conversation" and then loses the thread — the other half
+    // of the rule now lives in TWO_SOURCE_RULE at the end of the context.
+    "AUTHORITATIVE ON FACTS: for what EXISTS and what its current values are, this block overrides " +
+    "anything said earlier in this conversation, including your own earlier statements. If something " +
+    "is not listed here it does not exist (deleted, or never added — do not resurrect it); where a " +
+    'value differs from what was said earlier, this block wins. Answer "what do I have" / "is X on ' +
+    'my list" strictly from it, never from memory. It does NOT replace the conversation, which is ' +
+    "where the user's intent and your agreements live — use both (see the two-sources rule at the end).\n" +
+    "THIS IS ALSO WHAT YOU WORK WITH: when the user mentions something listed here, they mean THIS " +
+    "record — update it by id; never file a second copy of it.\n" +
     parts.join("\n") +
     "\n=== END LIVE GARDEN DATA ==="
   );
@@ -710,14 +743,47 @@ async function buildContextSummary() {
 // plant/tool via chat).
 const ACTION_CONVENTIONS =
   "\n\n## CHANGING THE APP'S DATA (critical)\n" +
-  "You are connected to the user's garden app (Garden, Inventory, Routines modules). The ONLY " +
-  "way you can create or change anything in those modules is by emitting action lines. Saying " +
+  // Names every module the closed-set block below enumerates — an intro that
+  // listed only three of them read as "and presumably others exist too",
+  // which is the exact gap this whole section is here to close.
+  "You are connected to the user's garden app (Garden, Inventory, Routines, To-do, To-get). The " +
+  "ONLY way you can create or change anything in those modules is by emitting action lines. Saying " +
   '"I\'ve added it" without an action line saves NOTHING — if you claim a change, you MUST emit ' +
   "the matching line(s).\n" +
   "An action line is one single line — the keyword, a colon, then its complete JSON on that " +
   "same line — placed at the very end of your reply, after your visible text. Emit SEVERAL " +
   "action lines (one per line) when the user mentions several changes in one message. The app " +
   "strips these lines before display; the user never sees them, so never mention or explain them.\n" +
+  // The other half of the duplicate problem: not "wrong record" but "record
+  // that could never exist". Models offered a write channel invent modules to
+  // write to (ADD_BED, LOG_HARVEST, SET_REMINDER), invent ids, and invent
+  // columns — and every one of those is a SILENT failure: the app ignores the
+  // line, the model still says "done!", and the user only finds out later that
+  // nothing was saved. Stated as a closed set, up front, with the consequence
+  // spelled out. Code guards back all three up (ACTION_START_RE ignores
+  // unknown verbs, handleAiActions reports unresolvable ids, and
+  // sanitizeActionFields strips invented columns before any write).
+  "WHAT THIS APP ACTUALLY HAS — a CLOSED SET (the most important limit on you):\n" +
+  "There are exactly seven places anything can be saved, and no others: 1. PLANTS (the Garden) · " +
+  "2. TOOLS & SUPPLIES (the Inventory) · 3. ROUTINES (recurring care tasks) · 4. TO-DOS (one-off " +
+  "tasks) · 5. THE TO-GET LIST (shopping) · 6. PHOTOS (a gallery + one cover picture per item) · " +
+  "7. CODEX ENTRIES (reference articles, which the app researches by itself — you never write them).\n" +
+  "That is the entire app. There are NO beds, zones, plots, rows, greenhouses, harvest logs, yield " +
+  "trackers, reminders, alerts, calendars, journals, seed banks, plant groups, watering schedules " +
+  "as such, or tag modules — and no action line exists for any of them. The complete list of " +
+  "keywords you may EVER emit is the FORMULAS list directly below; a keyword outside that list is " +
+  "not a feature you haven't used yet, it does literally nothing.\n" +
+  "If the user asks for something the app has no place for, say so plainly in one sentence, offer " +
+  "the nearest real fit, and emit NO action line. Example: \"There's no harvest log in the app — I " +
+  'can put the weight in the plant\'s notes, or add a to-do to weigh the next pick. Which would you ' +
+  'prefer?" Never invent a place to put it and never imply you saved it somewhere.\n' +
+  "NEVER INVENT AN ID: every id you use must appear verbatim in the LIVE GARDEN DATA block above. " +
+  "If the thing you want to change isn't in that block it does not exist — ask the user, or ADD_* " +
+  "it. Do not aim an UPDATE_*/REMOVE_*/COMPLETE_* at a number you guessed or remembered: the app " +
+  'discards it, so your "done!" would be a lie the user discovers days later.\n' +
+  "NEVER INVENT A FIELD: use only the field names in the formulas below. The app throws away every " +
+  'other key, so "soilPh", "sunlight", "harvestedOn", "waterAmount" and friends save NOTHING — put ' +
+  'that information in "notes", where it will actually persist.\n' +
   "FORMULAS (copy these shapes exactly):\n" +
   'ADD_PLANT: {"fields": {"name": "...", "location": "...", "plantingDate": "YYYY-MM-DD", "notes": "...", "tags": ["..."]}}\n' +
   'UPDATE_PLANT: {"id": <plant id>, "fields": {"lastWatered": "YYYY-MM-DD", "lastFertilized": "YYYY-MM-DD", "name": "...", "location": "...", "notes": "...", "tags": ["..."]}}\n' +
@@ -747,20 +813,41 @@ const ACTION_CONVENTIONS =
   'ATTACH_PHOTO: {"plantId": 4}\n' +
   'User says: "remind me to prune the roses this weekend" (today is Thursday 2026-08-06) — your reply ends with:\n' +
   'ADD_TODO: {"fields": {"text": "Prune the roses", "dueDate": "2026-08-08"}}\n' +
+  // The single most damaging failure mode in practice: the user talks about
+  // something they already own and the model files it as a NEW item, so the
+  // garden slowly fills with duplicate basils. Stated as its own headed
+  // section (not a bullet) because it has to survive being one rule among
+  // twenty. A code-level guard backs it up — see guardDuplicateAdd.
+  "WORK WITH WHAT THEY ALREADY HAVE (the mistake to avoid above all others):\n" +
+  "The LIVE GARDEN DATA block above is the inventory of everything that EXISTS. Before any ADD_*, " +
+  "look for the thing there. If it is listed, the user is talking about THAT record — emit UPDATE_* " +
+  "with its id. ADD_* is only for something genuinely not in the snapshot.\n" +
+  'WRONG — user says "the basil is looking yellow" and Plants already lists id:4 "Basil":\n' +
+  'ADD_PLANT: {"fields": {"name": "Basil"}}  ← this gives them two basils\n' +
+  'RIGHT: UPDATE_PLANT: {"id": 4, "fields": {"notes": "leaves yellowing"}}\n' +
+  "Same everywhere: more of a tool they own → UPDATE_TOOL its quantity, not ADD_TOOL; a routine, " +
+  "to-do or to-get already on the list → UPDATE_* it. A genuinely SEPARATE second specimen IS a " +
+  'real ADD_PLANT — but then give it a distinguishing name or location ("Basil (kitchen)") and say ' +
+  "in your visible text that it is a second one. If the wording could mean the existing item OR a " +
+  "new one, ASK which and emit no action line.\n" +
   "RULES:\n" +
-  "- ACT IN THIS REPLY: when the user asks for a change, the action line(s) must be at the end " +
-  "of THIS message — act first, then your visible text simply confirms it. NEVER answer " +
-  '"I\'ll add it" or "Added!" without the line in the same reply, and never defer the action ' +
-  "to a later turn. A reply that claims a change but has no action line is a failure.\n" +
+  "- NEVER CLAIM MORE THAN YOU DID: your visible text may only describe changes you actually " +
+  'emitted an action line for, into modules that actually exist. Never say you "logged the ' +
+  'harvest", "set a reminder", "added it to the calendar" or "created a bed" — there is nowhere ' +
+  "for any of those to go, so saying it is simply false.\n" +
+  "- ACT IN THIS REPLY: the action line(s) go at the end of THIS message — act first, then your " +
+  'visible text confirms it. Never "I\'ll add it" or "Added!" without the line beside it, never ' +
+  "deferred to a later turn. Claiming a change with no action line is a failure.\n" +
   "- ALWAYS act on explicit commands — add, remove, update, note, log, track, remember — with the matching action line(s).\n" +
   '- Photos the user sent in this chat appear as "[shared photo #N]". You CAN put them in a ' +
-  "plant's gallery with ATTACH_PHOTO, and set them as the cover picture of any plant, tool, " +
-  "or routine with SET_COVER — the app holds the image itself. NEVER say a photo " +
-  '"wasn\'t uploaded", that you "can\'t access it", or that you "need a URL". When the user ' +
-  "shares a clear photo of one of their items that has no picture yet, you may proactively " +
-  "SET_COVER it (mention that you did).\n" +
+  "plant's gallery with ATTACH_PHOTO and make them the cover of any plant/tool/routine with " +
+  'SET_COVER — the app holds the image. NEVER say a photo "wasn\'t uploaded", that you ' +
+  '"can\'t access it", or that you "need a URL". A clear photo of an item with no picture yet ' +
+  "may be SET_COVER'd proactively (mention that you did).\n" +
   '- "notes" REPLACES the old notes: to add a note, repeat the existing notes and append the new one (see example).\n' +
-  "- Use real ids from the garden data above. Only include fields that actually change. Never leave <placeholders> in the JSON.\n" +
+  "- Use real ids from the garden data above — never a guessed, remembered or sequential one. Only " +
+  "include fields that actually change, and only field names that appear in the formulas. Never " +
+  "leave <placeholders> in the JSON.\n" +
   "- Dates: use the device date given above. When the user watered/fertilized a plant: UPDATE_PLANT with that date, plus COMPLETE_ROUTINE if a matching routine exists.\n" +
   '- ADD_ROUTINE: "plantId" + "careAction" ("water"/"fertilize") are optional — set them when the routine cares for one specific plant, so completing it also updates that plant.\n' +
   "- Tag new items with 1-3 tags. Presets — plants: " +
@@ -770,7 +857,7 @@ const ACTION_CONVENTIONS =
   "; routines: " +
   PRESET_TAGS.routines.join("/") +
   ". Invent a short lowercase tag only when none fit.\n" +
-  "- If you are UNSURE which item the user means, or whether they really want a change: ask a short clarifying question in your visible reply and emit NO action line for that change.\n" +
+  "- Unsure which item they mean, or whether they want a change at all? Ask one short question in your visible reply and emit no action line for it.\n" +
   '- To-get list: "I need to buy X" / "remind me to get X" → ADD_TOGET. When the user says ' +
   "they BOUGHT something that's on the list: UPDATE_TOGET with done true AND ADD_TOOL so it " +
   "lands in their inventory.\n" +
@@ -782,39 +869,72 @@ const ACTION_CONVENTIONS =
   "- Never invent changes the user didn't ask for, and don't re-emit an action already applied " +
   "earlier in the conversation. BUT when the user explicitly asks you to create demo/sample/" +
   "example data, that IS a real request — emit one action line per item you create.\n" +
-  "- FOLLOW-UP SUGGESTIONS (optional): after any action lines and BEFORE the STATUS line, you " +
-  'may emit exactly ONE line: FOLLOWUP: ["item 1", "item 2", "item 3"] — 2-3 short items the ' +
-  "USER might send you next, questions OR commands/requests. Each string is inserted verbatim " +
-  "into the user's input box and sent AS THE USER when tapped, so it must be something THEY " +
-  'would type to YOU: first person ("I"/"my"), addressing you as "you". WRONG (your voice, an ' +
-  'offer): "Would you like me to add a watering routine?" / "Shall I check the soil pH?" / "Do ' +
-  'you want more details?" RIGHT (their voice): "How often should I water it?" / "Add a ' +
-  'watering routine for this" / "What pests should I watch for?" / "Remind me to spray next ' +
-  'week". Rule of thumb: never start with "Would you like", "Shall I", "Do you want", "Should ' +
-  'I", or "Let me know if" — start with a word the USER would say. Skip it for trivial ' +
-  "confirmations.\n" +
+  "- FOLLOW-UP SUGGESTIONS (optional): after any action lines and BEFORE the STATUS line, exactly " +
+  'ONE line: FOLLOWUP: ["item 1", "item 2"] — 2-3 short things the USER might send you next, ' +
+  "questions OR commands. Each string is inserted verbatim into their input box and sent AS THE " +
+  'USER, so write it in THEIR voice: first person ("I"/"my"), addressing you as "you". WRONG ' +
+  '(your voice, an offer): "Would you like me to add a watering routine?" RIGHT: "How often ' +
+  'should I water it?" / "Add a watering routine for this". Never start with "Would you like", ' +
+  '"Shall I", "Do you want", "Should I", "Let me know if". Skip it for trivial confirmations.\n' +
   "- COMPLETION FLAG (mandatory): the VERY LAST line of EVERY reply must be exactly " +
   "STATUS: done — or STATUS: continue if you could not finish everything in this reply " +
   "(too many items, ran out of space). On STATUS: continue the app immediately asks you to " +
   "keep going: emit ONLY the remaining action lines (no repeats), then STATUS: done. " +
   "Never leave a request partially handled without flagging continue.";
 
+// Both the garden snapshot and the chat history are already in the context —
+// the failure was never missing data, it was PRECEDENCE. Told only that the
+// snapshot is authoritative (as the snapshot header says), a model starts
+// answering from the data dump and forgets what was agreed two turns ago;
+// told only to follow the conversation, it answers from stale memory. This
+// block names both sources, gives each its own jurisdiction, and says which
+// wins in the two kinds of conflict. Placed at the END of the context (right
+// before ACTION_REMINDER) because that is where models weight hardest — the
+// same reason ACTION_REMINDER itself lives there. Also reused, condensed, by
+// the photo path in buildChatVisionPrompt.
+const TWO_SOURCE_RULE =
+  "TWO SOURCES OF TRUTH — you must use BOTH; neither replaces the other:\n" +
+  "1. LIVE GARDEN DATA (above) — the authority on WHAT EXISTS and its current values: which items " +
+  "the user has, their ids, quantities, locations, dates. It was read from the database moments ago.\n" +
+  "2. THIS CONVERSATION — the authority on INTENT: what the user is asking for right now, what the " +
+  "two of you already discussed and agreed, what you already did earlier in this thread, and what " +
+  "their pronouns point at.\n" +
+  "Your answer has to be consistent with BOTH at once. When they genuinely conflict: for a FACT " +
+  "about an item (does it exist, what is its value) the snapshot wins, even over something you said " +
+  "yourself earlier; for what the user WANTS right now, their latest message wins. If the " +
+  "conversation refers to something that is not in the snapshot, it was deleted or never saved — say " +
+  "so plainly instead of talking about it as if it were still there.\n" +
+  'REFERENCES: resolve "it", "that", "the same one", "the other one" against the recent ' +
+  "conversation FIRST, then match what you land on to a real id in the snapshot. If that lands on " +
+  "nothing, or on more than one item, ask which one rather than guessing.\n" +
+  // Ties the two-source framing to the closed-set rule in ACTION_CONVENTIONS:
+  // "use both sources" has to also mean "and nothing outside them". Kept to
+  // one sentence-pair so it doesn't restate the closed set itself.
+  "NEITHER SOURCE, NO ANSWER: anything about this user's garden that is in neither the snapshot " +
+  "nor this conversation is something you do not know — say so, or ask. Never close the gap with " +
+  "a plausible-looking id, a remembered value, or a feature this app doesn't have.";
+
 // Short reminder appended AFTER the conversation history — models weight the
 // end of the context most, and this is what finally made "add X" reliably act
 // in the SAME reply instead of a later one.
 const ACTION_REMINDER =
-  "REMINDER: before answering, re-check the live data snapshot above rather than relying on " +
-  "conversation memory. Also check — does the user's latest message ask to add, update, " +
+  "REMINDER: answer from the live snapshot AND the conversation above, per the two-sources rule. " +
+  "Before adding anything, check the snapshot for it — if it is already there, UPDATE_* that record " +
+  "instead of creating a second copy. Also check — does the user's latest message ask to add, update, " +
   "remove, log, note, or track anything (plant, tool, routine, to-do task, to-get/shopping item, " +
   "watering, purchase), to create demo/sample data (allowed — one action line per item), or to attach a " +
   "photo they sent to a plant (ATTACH_PHOTO) or set a cover (SET_COVER — you CAN do these)? " +
   "If yes: end THIS reply with the matching action line(s), exactly per the formulas in your " +
   "instructions — act now, in this reply, never later. If unsure which item they mean, ask " +
   "instead and emit nothing. If a change was already applied earlier in the conversation, " +
-  "don't re-emit it. Never claim a change without its action line in this same reply. " +
+  "don't re-emit it. " +
+  "STAY INSIDE THE APP: plants, tools/supplies, routines, to-dos, the to-get list and photos are " +
+  "the only things that exist — there is no bed, greenhouse, harvest log, reminder or calendar to " +
+  "write to, and no action keyword for one. Use only ids that literally appear in the snapshot and " +
+  "only the field names from the formulas; if the target isn't in the snapshot, ask instead of " +
+  "inventing an id, and never describe a change you didn't emit a line for. " +
   'Optionally, one line before the end: FOLLOWUP: ["…", "…"] — 2-3 items in the USER\'s voice, ' +
-  "questions or commands they'd send you, never offers like \"Would you like me to…\" (see the " +
-  "FOLLOWUP rule above). " +
+  'never offers like "Would you like me to…". ' +
   "Finally: your very last line must be STATUS: done, or STATUS: continue if work remains.";
 
 // Injected on automatic continuation rounds (previous reply flagged
@@ -842,12 +962,57 @@ function detectChatMode(text) {
   return ACT_INTENT_RE.test(t) && !t.includes("?") ? "act" : "chat";
 }
 
+// Rough token estimate. chars/4 is the usual English approximation, and it is
+// deliberately applied to the string that will ACTUALLY be sent — never to the
+// stored record — so a photo message costs its "[shared photo #N]" placeholder
+// and not its multi-hundred-KB data URL.
+function estimateTokens(text) {
+  return Math.ceil(String(text == null ? "" : text).length / 4);
+}
+
+// The exact content string buildContextMessages sends for one stored message.
+// Defined once so the budget below and the payload below it can never drift
+// apart — a budget measured against different text than it ships is worse than
+// no budget at all.
+function contextMessageContent(m) {
+  if (m && m.kind === "image") {
+    // The #id lets the model reference a specific photo in ATTACH_PHOTO.
+    return m.role === "user" ? `[shared photo #${m.id}] ${m.text || ""}` : m.text || "";
+  }
+  return (m && m.text) || "";
+}
+
+// Newest-first walk that keeps as much conversation as the budget allows:
+//   - FLOOR:   the newest CONTEXT_MIN_MESSAGES always survive, even when they
+//              alone blow the budget. One pasted wall of text must not be able
+//              to leave the model with nothing but the current question.
+//   - BUDGET:  past the floor, keep taking older messages while they still fit
+//              inside CONTEXT_TOKEN_BUDGET.
+//   - CEILING: never more than CONTEXT_MESSAGE_CAP messages however tiny they
+//              are, so a thread of thousands of one-word turns still produces a
+//              request of sane shape.
+// Returns the slice in chronological order (same as history.slice(-n) did).
+function sliceContextHistory(history, budget) {
+  const all = history || [];
+  const cap = budget == null ? CONTEXT_TOKEN_BUDGET : budget;
+  let used = 0;
+  let kept = 0;
+  for (let i = all.length - 1; i >= 0 && kept < CONTEXT_MESSAGE_CAP; i--) {
+    const cost = estimateTokens(contextMessageContent(all[i]));
+    // The floor is checked BEFORE the budget so nothing can undercut it.
+    if (kept >= CONTEXT_MIN_MESSAGES && used + cost > cap) break;
+    used += cost;
+    kept++;
+  }
+  return kept >= all.length ? all : all.slice(all.length - kept);
+}
+
 // Builds the text-only context array the chat model sees, from stored history.
 // `mode` is accepted but no longer changes anything here (the old "call" mode
 // is gone — voice input is now dictation into this same typed chat); routing
 // still happens server-side via the mode sent to /api/chat.
 async function buildContextMessages(history, mode) {
-  const recent = history.slice(-CONTEXT_LIMIT);
+  const recent = sliceContextHistory(history);
   // Awaited HERE, not by the caller: the snapshot must be read after the
   // previous continuation round's writes and immediately before this request.
   // The device date lives in its header now, so it isn't repeated here.
@@ -862,80 +1027,166 @@ async function buildContextMessages(history, mode) {
   // confidently about turns it can no longer see.
   const omitted = history.length - recent.length;
   if (omitted > 0) {
+    // Every number here is recomputed from the slice that is actually being
+    // sent, not from a constant — the counts used to be tied to CONTEXT_LIMIT,
+    // and a budget-based slice would have made that claim quietly false.
+    const shownTokens = recent.reduce((n, m) => n + estimateTokens(contextMessageContent(m)), 0);
     msgs.push({
       role: "system",
       content:
-        `[Note: ${omitted} earlier message(s) in this conversation are NOT shown to you. The live ` +
-        "garden data block above is current and already reflects them; for anything else from " +
-        "those messages, ask the user rather than guessing about what you can't see.]",
+        `[Note: this conversation has ${history.length} messages; the most recent ${recent.length} ` +
+        `of them are shown to you below (roughly ${shownTokens} tokens — as much of the thread as ` +
+        `fits). The ${omitted} older one(s) are NOT visible. Any ` +
+        "data change they caused is already reflected in the live garden data block above; for " +
+        "anything else from them, ask the user rather than guessing about what you can't see.]",
     });
   }
   for (const m of recent) {
-    if (m.kind === "image") {
-      // The #id lets the model reference a specific photo in ATTACH_PHOTO.
-      msgs.push({
-        role: m.role,
-        content:
-          m.role === "user"
-            ? `[shared photo #${m.id}] ${m.text || ""}`
-            : m.text || "",
-      });
-    } else {
-      msgs.push({ role: m.role, content: m.text || "" });
-    }
+    msgs.push({ role: m.role, content: contextMessageContent(m) });
   }
   // Entity-disambiguation hints for the CURRENT turn — read from the full
   // `history`, not the possibly-truncated `recent` slice, since the latest
-  // message is always in `recent` anyway (CONTEXT_LIMIT is never 0) and this
-  // is cheap either way. Pushed immediately before ACTION_REMINDER (the last
-  // message) rather than up near the snapshot: models weight the END of the
-  // context most, and a same-named real-world entity is exactly the kind of
-  // strong prior that needs a nudge right before the model answers, not one
-  // buried under 24 messages of history.
+  // message is always in `recent` anyway (the slice's floor is never 0) and
+  // this is cheap either way. Pushed immediately before ACTION_REMINDER (the
+  // last message) rather than up near the snapshot: models weight the END of
+  // the context most, and a same-named real-world entity is exactly the kind
+  // of strong prior that needs a nudge right before the model answers, not one
+  // buried under a few hundred messages of history.
   const lastUser = [...history].reverse().find((m) => m.role === "user");
   const entityHints = lastUser ? await buildEntityHints(lastUser.text || "") : "";
   if (entityHints) msgs.push({ role: "system", content: entityHints });
+  // After the history, before the action reminder: the snapshot's own header
+  // says "I override the conversation", which on its own makes the model drop
+  // the thread. This is where that gets balanced back out — see TWO_SOURCE_RULE.
+  msgs.push({ role: "system", content: TWO_SOURCE_RULE });
   msgs.push({ role: "system", content: ACTION_REMINDER });
   return msgs;
+}
+
+// The vision endpoint takes ONE prompt string, not a chat-completions array,
+// so recent turns have to be flattened into text to reach it. Still clipped —
+// this rides on top of an image payload and the free tier is billed per minute
+// of tokens — but far less hard than before (was 8 turns / 200 chars): the
+// photo path's whole job now is deciding WHICH existing item it is looking at,
+// and that decision lives in the conversation ("the one on the balcony", "the
+// second mint"). 16 × 400 chars is ~1.6k tokens worst case, which is worth it.
+function formatRecentTranscript(history, limit = 16, clip = 400) {
+  const lines = [];
+  for (const m of (history || []).slice(-limit)) {
+    const body = ((m.kind === "image" ? "[photo] " : "") + String(m.text || ""))
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!body) continue;
+    lines.push(`${m.role === "user" ? "User" : "You"}: ${body.slice(0, clip)}${body.length > clip ? "…" : ""}`);
+  }
+  return lines.join("\n");
 }
 
 // Prompt for photos sent from the CHAT tab (the Garden detail page builds its
 // own, pinned to a specific plant id). Gives the vision model the same garden
 // awareness + write-back powers as the chat model.
-async function buildChatVisionPrompt(caption) {
-  // Lighter than buildKnowledgeContext (a photo only ever needs the plant
-  // list), but the SAME authority framing — the two must never contradict.
-  const plants = await getAllPlants();
-  const plantList =
-    `AUTHORITATIVE plant list, read from the app's database just now (${plants.length}) — it ` +
-    "overrides anything said earlier, and a plant not on it does not exist: " +
+//
+// `history` is the conversation BEFORE this photo. It used to be omitted
+// entirely, so a photo sent right after "which of my two mints is this?"
+// answered as if the thread had never happened — the photo path could see the
+// database but not the chat, which is exactly the split this is meant to fix.
+//
+// THE DEFAULT ASSUMPTION IS "SOMETHING THEY ALREADY OWN" (user: "i also send
+// most of the time a picture of a plant i already have. only log a new plant
+// if i state that it's new or if it does not exist in the garden"). This
+// prompt used to open with "Identify the plant", which pushed the model
+// straight into naming a species and then filing that species as a new record
+// — the fastest known way to end up with four Basils. It now leads with
+// matching against the snapshot, gates ADD_PLANT behind explicit "this is new"
+// wording, tells the model to ASK when two candidates fit, and stops assuming
+// the subject is a plant at all: tools, product labels, pests, diseased
+// leaves, soil and whole beds all get photographed too.
+async function buildChatVisionPrompt(caption, history) {
+  // Lighter than buildKnowledgeContext, but the SAME authority framing — the
+  // two must never contradict. Tools/supplies are in here now because a photo
+  // is just as often a bottle of fungicide or a pruner as it is a plant, and a
+  // model shown only plants will bend whatever it sees into a plant.
+  const [plants, tools] = await Promise.all([getAllPlants(), getAllTools()]);
+  const inventory =
+    "\n=== WHAT THE USER ALREADY HAS — read from the app's database just now ===\n" +
+    "AUTHORITATIVE: this is everything saved in their garden. It overrides anything said earlier, " +
+    "and an item not listed here does not exist. These ids are the ONLY ids you may ever use.\n" +
+    `PLANTS (${plants.length}): ` +
     (plants.length
       ? plants.map((p) => `id:${p.id} "${p.name}" (${p.location || "unknown location"})`).join(", ")
       : "none saved yet") +
-    ". ";
+    `\nTOOLS & SUPPLIES (${tools.length}): ` +
+    (tools.length
+      ? tools
+          .map((t) => `id:${t.id} "${t.name}"${t.brand ? ` — ${t.brand}` : ""} x${t.quantity == null ? 1 : t.quantity}`)
+          .join(", ")
+      : "none saved yet") +
+    "\n=== END ===\n";
   // Same name-collision problem as the chat path (e.g. a caption mentioning
   // "lenovo"), just lighter-weight since a photo caption is usually short —
   // buildEntityHints itself already keeps this a no-op when nothing matches.
   const entityHints = await buildEntityHints(caption || "");
+  const transcript = formatRecentTranscript(history);
+  const conversation = transcript
+    ? "\n=== RECENT CONVERSATION (before this photo) ===\n" +
+      transcript +
+      "\n=== END RECENT CONVERSATION ===\n" +
+      "Use BOTH: the lists above are the authority on what exists and its values; this " +
+      'conversation is the authority on what the user means — including what "it"/"that" refer ' +
+      "to, which item they were just talking about, and anything the two of you already agreed. " +
+      "Your reply must fit both, and it must continue this thread rather than start over.\n"
+    : "";
   return (
-    "You are Sprout, a friendly gardening companion analyzing a photo for a home gardener. " +
+    "You are Sprout, a friendly gardening companion, looking at a photo the user just sent. " +
     `The user's device says it is now: ${deviceNow()}. ` +
-    plantList +
-    "Identify the plant, assess its health from the photo, and give concrete care advice. " +
-    `The user's question about this photo: "${caption}". ` +
+    `The user's message with this photo: "${caption}".\n` +
+    inventory +
+    conversation +
     entityHints +
-    (entityHints ? " " : "") +
-    "You may end your reply with hidden action lines (JSON on a single line, never mentioned " +
-    "in your visible reply):\n" +
-    'UPDATE_PLANT: {"id": <plant id>, "fields": {"notes": "..."}} — if this photo warrants a record update.\n' +
-    'ADD_PLANT: {"fields": {...}} — if the user clearly wants this new plant tracked.\n' +
-    'ATTACH_PHOTO: {"plantId": <plant id>} — saves THIS photo into that plant\'s gallery; use it ' +
+    (entityHints ? "\n" : "") +
+    "START HERE — THIS IS ALMOST ALWAYS SOMETHING THEY ALREADY OWN:\n" +
+    "The user photographs their OWN garden. Assume by default that the subject is already in the " +
+    "lists above, and treat your first job as working out WHICH record it is — not as identifying " +
+    "a species from scratch. Match on what you can see plus the location, the caption, and the " +
+    "conversation. Then answer their actual question about it.\n" +
+    "IT MAY NOT BE A PLANT AT ALL. It could be a tool, a bottle or bag with a product label, a " +
+    "pest, a diseased leaf, soil or compost, a pot, or a whole bed. Say what it ACTUALLY is — " +
+    "never force a plant identification onto a photo that isn't of a plant. If it is a product " +
+    "label, read the label instead: product name, brand, what type of product it is, active " +
+    "ingredients, dosage/mixing rate, and the key safety warnings.\n" +
+    "IF YOU CANNOT TELL WHICH ITEM IT IS, ASK — one short question, and emit no action line at " +
+    'all: "Is this the balcony basil or the kitchen one?" Guessing files the photo, or a whole ' +
+    "new record, against the wrong item and the user has to undo it. Asking costs one message.\n" +
+    'WHEN IS IT ACTUALLY NEW? Only when the user\'s message says so — "new", "just planted", ' +
+    '"just bought", "picked this up today", "adding this one" — or when nothing in the lists ' +
+    "above plausibly matches it. A photo on its own is NEVER evidence that something is new: the " +
+    "usual reason someone photographs a plant is that they already have it.\n" +
+    "ACTION LINES (hidden — JSON on one single line at the very end of your reply, never mentioned " +
+    "in your visible text). This app has EXACTLY these places to save things, and no others:\n" +
+    'UPDATE_PLANT: {"id": <id from the list above>, "fields": {"notes": "...", "location": "...", "tags": ["..."]}}\n' +
+    "  ← THE DEFAULT when the photo shows a plant they already have. \"notes\" REPLACES the old " +
+    "notes, so repeat what's there and append what the photo tells you.\n" +
+    'UPDATE_TOOL: {"id": <id from the list above>, "fields": {"brand": "...", "condition": "new|good|worn|needs repair", "notes": "...", "tags": ["..."]}}\n' +
+    "  ← the same default when the photo shows a tool, supply or product they already have.\n" +
+    'ATTACH_PHOTO: {"plantId": <id>} — saves THIS photo into that plant\'s gallery; use it ' +
     "whenever the user asks to add/attach/save this picture to a plant (you CAN do this — never " +
     "say the photo wasn't uploaded or that you need a URL).\n" +
+    'SET_COVER: {"target": "plant"|"tool", "id": <id>} — makes this photo that item\'s cover picture.\n' +
+    'ADD_PLANT: {"fields": {"name": "...", "location": "...", "tags": ["..."]}} — ONLY under the ' +
+    '"WHEN IS IT ACTUALLY NEW?" rule above. Never a second copy of a plant already listed.\n' +
+    'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "tags": ["..."]}} — same gate, for a tool ' +
+    "or supply they say they just bought.\n" +
+    "IDS: use ONLY ids that literally appear in the lists above. Never invent or guess a number — " +
+    "the app discards an action aimed at an id that doesn't exist, so it would save nothing while " +
+    "you told the user it was done.\n" +
+    "NOTHING ELSE EXISTS: there is no bed, zone, greenhouse, harvest log, reminder or calendar in " +
+    "this app, and no action keyword for one. If the photo makes you want one, say so in plain " +
+    "words and emit nothing.\n" +
     'FOLLOWUP: ["item 1", "item 2"] — optional, exactly one line, AFTER any action lines: 2-3 ' +
     "short items in the USER's voice — questions or commands they'd send you, never an offer " +
     'like "Would you like me to…" (see the FOLLOWUP rule).\n' +
-    "Emit none of them when not genuinely warranted."
+    "Emitting NO action line at all is the right outcome most of the time — usually the user just " +
+    "wants to know what is going on in the picture."
   );
 }
 
@@ -972,6 +1223,22 @@ const ACTION_TYPE_MAP = {
 // leftmost-alternative rule (guarded by a test in run_app2.js).
 const ACTION_START_RE =
   /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|ATTACH_PHOTO|SET_COVER|ADD_TOGET|UPDATE_TOGET|REMOVE_TOGET|ADD_TODO|UPDATE_TODO|COMPLETE_TODO|REMOVE_TODO)\**[ \t]*:[ \t\n]*\{/g;
+
+// Hidden action lines for modules this app does NOT have — "ADD_BED",
+// "LOG_HARVEST", "SET_REMINDER", "ADD_GREENHOUSE". ACTION_START_RE already
+// makes these harmless: its alternation is a closed list of complete tokens,
+// so an unknown verb never matches, nothing is parsed and nothing is applied
+// (near-misses are safe too — "ADD_TOOLBOX" starts to match ADD_TOOL, then
+// fails on the required ":" and backtracks to no match at all).
+//
+// The remaining problem is the leftover: the raw line stays in the VISIBLE
+// reply, where it reads to the user either as a broken app or — worse — as
+// proof the change happened. This second pass finds those lines so they can be
+// stripped and reported. Requires at least one underscore, which is what keeps
+// it away from the STATUS / SOURCES / FOLLOWUP lines (and FOLLOWUP carries a
+// "[" rather than the "{" required here).
+const UNKNOWN_ACTION_START_RE =
+  /(?:^|\n)[ \t>*`-]*([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\**[ \t]*:[ \t\n]*\{/g;
 
 // Completion flag: every reply is asked to end with STATUS: done|continue.
 // "continue" makes the chat immediately re-prompt so no request is ever left
@@ -1086,11 +1353,40 @@ function extractActions(text) {
   for (let i = spans.length - 1; i >= 0; i--) {
     src = src.slice(0, spans[i][0]) + src.slice(spans[i][1]);
   }
+  // Second pass, over what the real verbs left behind: action lines for
+  // modules that don't exist (see UNKNOWN_ACTION_START_RE). These were never
+  // applied — they just have to stop being shown to the user as if they were.
+  const unknownVerbs = [];
+  const unknownSpans = [];
+  UNKNOWN_ACTION_START_RE.lastIndex = 0;
+  let u;
+  while ((u = UNKNOWN_ACTION_START_RE.exec(src)) !== null && unknownSpans.length < 12) {
+    const verb = u[1];
+    // A REAL verb still sitting here means its JSON was malformed, which the
+    // pass above deliberately leaves visible rather than silently losing.
+    if (ACTION_TYPE_MAP[verb]) continue;
+    const openIdx = u.index + u[0].length - 1; // position of '{'
+    const end = scanJsonObject(src, openIdx);
+    if (end === -1) continue; // unbalanced — not obviously an action line, leave it
+    let stripEnd = end;
+    const tail = src.slice(end).match(/^[ \t]*`{0,3}\**/);
+    if (tail) stripEnd += tail[0].length;
+    const start = u.index + (src[u.index] === "\n" ? 1 : 0); // keep the newline
+    unknownSpans.push([start, stripEnd]);
+    if (unknownVerbs.indexOf(verb) === -1) unknownVerbs.push(verb);
+    UNKNOWN_ACTION_START_RE.lastIndex = end;
+  }
+  for (let i = unknownSpans.length - 1; i >= 0; i--) {
+    src = src.slice(0, unknownSpans[i][0]) + src.slice(unknownSpans[i][1]);
+  }
   const cleanText = src
     .replace(/```[a-z]*\s*```/gi, "") // fences left empty after extraction
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return { cleanText, actions };
+  // `unknownVerbs` is ADDITIVE — every caller destructures { cleanText,
+  // actions } and simply ignores it. It exists so a UI can eventually say
+  // "Sprout tried to use a module this app doesn't have" instead of nothing.
+  return { cleanText, actions, unknownVerbs };
 }
 
 // Back-compat single-action wrapper (kept in case any older code path calls it).
@@ -1361,6 +1657,196 @@ async function completeRoutine(routine) {
   }
 }
 
+// ---------- duplicate-ADD guard ----------
+//
+// WHY: prompt rules leak. Even with the "work with what they already have"
+// section in ACTION_CONVENTIONS, a model that hears "the basil is looking
+// yellow" still sometimes emits ADD_PLANT instead of UPDATE_PLANT, and the
+// user quietly ends up with two Basils. Prompting alone can't be the only
+// defence for something that silently corrupts the user's data, so every
+// ADD_* passes through here first.
+//
+// DECISION RULE — deliberately conservative, because "I planted ANOTHER
+// basil" is a real and common thing to want:
+//   * No EXACT normalized-name match (see normalizeItemName) → add normally.
+//     A near-miss like "Thai basil" or "Basil #2" is a different item, and
+//     this does no fuzzy/edit-distance matching for exactly that reason.
+//   * Exact match, but the add carries a DISTINGUISHING field that CONFLICTS
+//     with the existing record (a different location for a plant/tool, a
+//     different plantId for a routine, a different dueDate for a to-do) →
+//     it really is a separate thing: keep the ADD, flagged so the user sees
+//     "a second one" in the applied list.
+//   * More than one existing record already shares the name → ambiguous,
+//     nothing to safely update: keep the ADD, flagged.
+//   * Exact match, no conflict, and the add brings something new (a value the
+//     existing record is missing or has differently) → CONVERT to UPDATE_* of
+//     that record, merging only those fields.
+//   * Exact match, no conflict, nothing new → DROP as a no-op.
+// Every one of those five outcomes is described to the user by describeAction
+// and appears in the "applied" list; none of them happens silently.
+//
+// Note the asymmetry: a missing value on the existing record is NOT a
+// conflict (filling in a blank location is helpful and non-destructive),
+// while two different non-empty values are.
+
+// Comparison form for names: case-insensitive, punctuation-insensitive
+// ("neem-oil" == "Neem Oil"), whitespace-collapsed, tolerant of a simple
+// trailing plural ("Roses" == "rose"). The trailing "s" is only stripped when
+// at least 3 characters of stem remain, so short names can't collide.
+function normalizeItemName(name) {
+  const base = String(name == null ? "" : name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  return base.replace(/([a-z0-9]{3,})s$/, "$1");
+}
+
+// True only when both sides carry a real value AND those values differ. A
+// blank on either side is "no information", never a conflict.
+function guardValuesDiffer(a, b) {
+  if (a == null || a === "" || b == null || b === "") return false;
+  if (Array.isArray(a) || Array.isArray(b)) return false; // tags never distinguish two items
+  if (typeof a === "number" || typeof b === "number") return Number(a) !== Number(b);
+  return normalizeItemName(a) !== normalizeItemName(b);
+}
+
+// Per ADD type: the existing records to compare against, which property holds
+// their name, which incoming fields name it, which fields make a same-named
+// record a genuinely SEPARATE item, which are worth merging on a convert, and
+// how the resolved update action is shaped.
+async function loadAddGuardSpec(type) {
+  switch (type) {
+    case "add":
+      return {
+        records: await getAllPlants(), nameKey: "name", fieldNameKeys: ["name"],
+        distinguishing: ["location"],
+        mergeable: ["location", "notes", "plantingDate", "tags", "lastWatered", "lastFertilized"],
+        updateType: "update_plant", itemKey: "plant", where: "garden",
+      };
+    case "add_tool":
+      return {
+        records: await getAllTools(), nameKey: "name", fieldNameKeys: ["name"],
+        distinguishing: ["location", "brand"],
+        mergeable: ["quantity", "notes", "tags", "brand", "condition", "location", "purchaseDate", "price"],
+        updateType: "update_tool", itemKey: "tool", where: "inventory",
+      };
+    case "add_routine":
+      return {
+        records: await getAllRoutines(), nameKey: "task", fieldNameKeys: ["task", "name"],
+        distinguishing: ["plantId"],
+        mergeable: ["intervalDays", "tags", "careAction", "plantId"],
+        updateType: "update_routine", itemKey: "routine", where: "routines",
+      };
+    case "add_todo":
+      // Finished to-dos are excluded: re-adding a task the user already ticked
+      // off ("prune the roses" again next month) is a legitimate new to-do.
+      return {
+        records: (await getAllTodos()).filter((t) => !t.done), nameKey: "text", fieldNameKeys: ["text", "task", "name"],
+        distinguishing: ["dueDate"],
+        mergeable: ["dueDate", "notes"],
+        updateType: "update_todo", itemKey: "todo", where: "to-do list",
+      };
+    case "add_toget":
+      // Same reasoning: something already bought can be needed again.
+      return {
+        records: (await getAllShoppingItems()).filter((s) => !s.done), nameKey: "name", fieldNameKeys: ["name"],
+        distinguishing: [],
+        mergeable: ["quantity", "notes"],
+        updateType: "update_toget", itemKey: "item", where: "to-get list",
+      };
+    default:
+      return null;
+  }
+}
+
+// The subset of `fields` genuinely worth writing onto `existing`.
+function buildMergeFields(existing, fields, mergeable) {
+  const out = {};
+  for (const key of mergeable) {
+    const v = fields[key];
+    if (v == null || v === "") continue;
+    if (Array.isArray(v)) {
+      // Union, not replace — an add's tags shouldn't wipe curated ones.
+      const before = normTags(existing[key] || []);
+      const merged = normTags([...before, ...v]);
+      if (merged.length > before.length) out[key] = merged;
+      continue;
+    }
+    if (key === "notes") {
+      // "notes" REPLACES on write (see ACTION_CONVENTIONS), so a straight
+      // merge here would delete whatever the record already said. Append.
+      const old = String(existing.notes || "").trim();
+      const add = String(v).trim();
+      if (!add || old.toLowerCase().includes(add.toLowerCase())) continue;
+      out.notes = old ? `${old}; ${add}` : add;
+      continue;
+    }
+    const cur = existing[key];
+    if (cur == null || cur === "" || guardValuesDiffer(cur, v)) out[key] = v;
+  }
+  return out;
+}
+
+// Returns a resolved action to use INSTEAD of the raw add, or null to let the
+// add through unchanged.
+async function guardDuplicateAdd(type, fields) {
+  const spec = await loadAddGuardSpec(type);
+  if (!spec) return null;
+  const rawName = spec.fieldNameKeys.map((k) => fields[k]).find((v) => v != null && v !== "");
+  const wanted = normalizeItemName(rawName);
+  if (!wanted) return null; // nothing to match on — let applyX* use its default name
+
+  const matches = spec.records.filter((r) => normalizeItemName(r[spec.nameKey]) === wanted);
+  if (!matches.length) return null;
+
+  const label = String(rawName).trim();
+  if (matches.length > 1) {
+    return { type, fields, dedupNote: `you already have ${matches.length} named "${label}" — adding another` };
+  }
+
+  const existing = matches[0];
+  const conflict = spec.distinguishing.find((k) => guardValuesDiffer(existing[k], fields[k]));
+  if (conflict) {
+    return {
+      type, fields,
+      dedupNote: `a different ${conflict} from the "${label}" you already have — adding a second one`,
+    };
+  }
+
+  const merge = buildMergeFields(existing, fields, spec.mergeable);
+  if (!Object.keys(merge).length) {
+    return { type: "noop_duplicate", name: existing[spec.nameKey] || label, where: spec.where };
+  }
+  return {
+    type: spec.updateType,
+    [spec.itemKey]: existing,
+    fields: merge,
+    dedupNote: `already in your ${spec.where} — not added twice`,
+  };
+}
+
+// The raw ADD, resolved the way it always was. Used when the guard passes.
+const ADD_RESOLVED_TYPE = {
+  add: "add_plant",
+  add_tool: "add_tool",
+  add_routine: "add_routine",
+  add_todo: "add_todo",
+  add_toget: "add_toget",
+};
+
+// Runs the guard and returns the resolved action either way. `type` is the
+// extracted action type; the guard hands back a "keep the add" shape carrying
+// the same `type`, which is mapped here to its resolved name.
+async function resolveAdd(type, fields) {
+  const guarded = await guardDuplicateAdd(type, fields);
+  if (!guarded) return { type: ADD_RESOLVED_TYPE[type], fields };
+  if (guarded.type === type) {
+    // Guard chose to keep the ADD, but flagged it so the user sees why.
+    return { type: ADD_RESOLVED_TYPE[type], fields: guarded.fields, dedupNote: guarded.dedupNote };
+  }
+  return guarded; // converted to an update, or a described no-op
+}
+
 // Turns a raw extracted action into a resolved, describable, applicable one.
 // Returns null when the target no longer exists (stale id from the model).
 // ctx: { chatId } — needed by attach_photo to find "the newest photo here".
@@ -1392,14 +1878,13 @@ async function resolveAction(action, ctx) {
       const photoMsg = await resolvePhotoTarget(action, ctx);
       return photoMsg ? { type: "set_cover", kindName, item, photoMsg } : null;
     }
+    // Every ADD_* goes through resolveAdd, which may convert it into an
+    // update of the record the user already has, or into a described no-op.
     case "add":
-      return { type: "add_plant", fields: action.fields || {} };
     case "add_tool":
-      return { type: "add_tool", fields: action.fields || {} };
     case "add_routine":
-      return { type: "add_routine", fields: action.fields || {} };
     case "add_toget":
-      return { type: "add_toget", fields: action.fields || {} };
+      return resolveAdd(action.type, action.fields || {});
     case "update_toget": {
       const item = await resolveShoppingTarget(action);
       return item ? { type: "update_toget", item, fields: action.fields || {} } : null;
@@ -1409,7 +1894,7 @@ async function resolveAction(action, ctx) {
       return item ? { type: "remove_toget", item } : null;
     }
     case "add_todo":
-      return { type: "add_todo", fields: action.fields || {} };
+      return resolveAdd("add_todo", action.fields || {});
     case "update_todo": {
       const todo = await resolveTodoTarget(action);
       return todo ? { type: "update_todo", todo, fields: action.fields || {} } : null;
@@ -1452,21 +1937,27 @@ function describeAction(a) {
     Object.entries(fields || {})
       .map(([k, v]) => `${k} → ${Array.isArray(v) ? v.join(", ") : v}`)
       .join(", ");
+  // Set by the duplicate-ADD guard. Whatever it decided — converted, kept,
+  // dropped — the user reads it here, in the same "applied" list as everything
+  // else, so nothing about their data changes (or fails to change) unseen.
+  const dup = a.dedupNote ? ` (${a.dedupNote})` : "";
   switch (a.type) {
+    case "noop_duplicate":
+      return `Kept "${a.name}" as it is — already in your ${a.where}, and nothing new to save (not added twice)`;
     case "add_plant":
-      return `Add plant "${a.fields.name || "New plant"}"`;
+      return `Add plant "${a.fields.name || "New plant"}"${dup}`;
     case "update_plant":
-      return `Update "${a.plant.name}": ${fieldsText(a.fields)}`;
+      return `Update "${a.plant.name}"${dup}: ${fieldsText(a.fields)}`;
     case "add_tool":
-      return `Add "${a.fields.name || "New item"}" (x${a.fields.quantity || 1}) to inventory`;
+      return `Add "${a.fields.name || "New item"}" (x${a.fields.quantity || 1}) to inventory${dup}`;
     case "update_tool":
-      return `Update "${a.tool.name}": ${fieldsText(a.fields)}`;
+      return `Update "${a.tool.name}"${dup}: ${fieldsText(a.fields)}`;
     case "remove_tool":
       return `Remove "${a.tool.name}" from inventory`;
     case "add_routine":
-      return `Add routine "${a.fields.task || "New routine"}" (every ${a.fields.intervalDays || 1}d)`;
+      return `Add routine "${a.fields.task || "New routine"}" (every ${a.fields.intervalDays || 1}d)${dup}`;
     case "update_routine":
-      return `Update routine "${a.routine.task}": ${fieldsText(a.fields)}`;
+      return `Update routine "${a.routine.task}"${dup}: ${fieldsText(a.fields)}`;
     case "complete_routine":
       return `Mark routine "${a.routine.task}" done`;
     case "attach_photo":
@@ -1474,17 +1965,17 @@ function describeAction(a) {
     case "set_cover":
       return `Set the chat photo as the cover of ${a.kindName} "${a.item.name || a.item.task}"`;
     case "add_toget":
-      return `Add "${a.fields.name || "New item"}" to the to-get list`;
+      return `Add "${a.fields.name || "New item"}" to the to-get list${dup}`;
     case "update_toget":
       return a.fields && a.fields.done
         ? `Check off "${a.item.name}" on the to-get list`
-        : `Update to-get "${a.item.name}": ${fieldsText(a.fields)}`;
+        : `Update to-get "${a.item.name}"${dup}: ${fieldsText(a.fields)}`;
     case "remove_toget":
       return `Remove "${a.item.name}" from the to-get list`;
     case "add_todo":
-      return `Add to-do "${a.fields.text || "New task"}"${a.fields.dueDate ? ` (due ${a.fields.dueDate})` : ""}`;
+      return `Add to-do "${a.fields.text || "New task"}"${a.fields.dueDate ? ` (due ${a.fields.dueDate})` : ""}${dup}`;
     case "update_todo":
-      return `Update to-do "${a.todo.text}": ${fieldsText(a.fields)}`;
+      return `Update to-do "${a.todo.text}"${dup}: ${fieldsText(a.fields)}`;
     case "complete_todo":
       return `Tick off to-do "${a.todo.text}"`;
     case "remove_todo":
@@ -1506,6 +1997,10 @@ async function applyResolvedAction(a) {
 
 async function runResolvedAction(a) {
   switch (a.type) {
+    // A duplicate ADD the guard dropped: nothing to write, but it still flows
+    // through resolve/describe so the user is told it was recognised, not lost.
+    case "noop_duplicate":
+      return;
     case "add_plant":
       return applyPlantAdd(a.fields);
     case "update_plant":
@@ -1543,21 +2038,154 @@ async function runResolvedAction(a) {
   }
 }
 
+// ---------- schema guard: only real columns are ever written ----------
+//
+// WHY: the prompt lists exact field names per action, but models invent
+// plausible neighbours anyway ("soilPh", "sunExposure", "harvestedOn",
+// "waterAmount") — and several apply* functions spread `fields` straight onto
+// the record ({ ...tool, ...fields }), so an invented key would be persisted
+// forever and then read back OUT of the snapshot on the next turn as if the
+// app really had that column. IndexedDB stores are schemaless, so nothing
+// downstream would ever catch it. Every key is checked against the record
+// shapes documented in idb.js before anything is written or even queued.
+//
+// Some genuinely real columns are deliberately absent because the CODE owns
+// them, not the model: id/createdAt (the database), completedAt and lastDone
+// (set when something is marked done), photoHistory/coverThumb/photoThumb
+// (only ATTACH_PHOTO and SET_COVER may touch images), done on a to-do (that's
+// COMPLETE_TODO's job, and UPDATE_TODO keeps it for explicit un-ticking).
+const ACTION_FIELD_WHITELIST = {
+  add: ["name", "notes", "plantingDate", "location", "lastWatered", "lastFertilized", "tags"],
+  update: ["name", "notes", "plantingDate", "location", "lastWatered", "lastFertilized", "tags"],
+  add_tool: ["name", "quantity", "notes", "tags", "brand", "condition", "location", "purchaseDate", "price", "lastUsed", "productInfo"],
+  update_tool: ["name", "quantity", "notes", "tags", "brand", "condition", "location", "purchaseDate", "price", "lastUsed", "productInfo"],
+  // "name" is an accepted ALIAS for "task" on an add: loadAddGuardSpec's
+  // fieldNameKeys reads it, so stripping it would blind the duplicate guard.
+  add_routine: ["task", "name", "intervalDays", "plantId", "careAction", "tags"],
+  update_routine: ["task", "intervalDays", "plantId", "careAction", "tags"],
+  // Same alias story — applyTodoAdd falls back to fields.task for "text".
+  add_todo: ["text", "task", "name", "dueDate", "notes"],
+  update_todo: ["text", "dueDate", "notes", "done"],
+  add_toget: ["name", "quantity", "notes", "done"],
+  update_toget: ["name", "quantity", "notes", "done"],
+};
+
+// The field that must survive sanitising for an ADD to mean anything at all.
+// An ADD whose only content was invented keys is a hallucination, not a
+// request — letting it through would create a record literally called
+// "New plant" (see applyPlantAdd's fallback).
+const ACTION_NAME_FIELDS = {
+  add: ["name"],
+  add_tool: ["name"],
+  add_toget: ["name"],
+  add_routine: ["task", "name"],
+  add_todo: ["text", "task", "name"],
+};
+
+// Returns { fields, dropped } — `fields` carrying only real columns for this
+// action's store, `dropped` the invented keys, for reporting.
+function sanitizeActionFields(type, fields) {
+  const allowed = ACTION_FIELD_WHITELIST[type];
+  if (!allowed || !fields || typeof fields !== "object" || Array.isArray(fields)) {
+    return { fields: fields, dropped: [] };
+  }
+  const clean = {};
+  const dropped = [];
+  for (const key of Object.keys(fields)) {
+    if (allowed.indexOf(key) !== -1) clean[key] = fields[key];
+    else dropped.push(key);
+  }
+  return { fields: clean, dropped };
+}
+
+// What the user's data calls this kind of thing, for skip messages.
+const ACTION_SKIP_LABEL = {
+  add: "plant", update: "plant",
+  add_tool: "inventory item", update_tool: "inventory item", remove_tool: "inventory item",
+  add_routine: "routine", update_routine: "routine", complete_routine: "routine",
+  add_todo: "to-do", update_todo: "to-do", complete_todo: "to-do", remove_todo: "to-do",
+  add_toget: "to-get item", update_toget: "to-get item", remove_toget: "to-get item",
+  attach_photo: "plant photo", set_cover: "cover photo",
+};
+
+// "(id 999)" / '("Basil")' / '(id 4, "Basil")' — whatever the model gave us to
+// aim with, echoed back so the skip message names the thing it failed on.
+function actionTargetRef(action) {
+  const name = action.name || action.plantName || action.task || action.text;
+  const id = action.id != null ? action.id : action.plantId;
+  if (id != null && name) return ` (id ${id}, "${name}")`;
+  if (id != null) return ` (id ${id})`;
+  if (name) return ` ("${name}")`;
+  return "";
+}
+
+function describeSkippedAction(action, why) {
+  const label = ACTION_SKIP_LABEL[action.type] || "item";
+  const article = /^[aeiou]/i.test(label) ? "an" : "a"; // "an inventory item", not "a inventory item"
+  return `Didn't save ${article} ${label} change Sprout tried to make${actionTargetRef(action)} — ${why}.`;
+}
+
 // Shared by Chat/Garden/Inventory: resolves every action pulled from an AI
 // reply, then either applies them immediately (auto mode) or queues them for
 // the user to confirm. Pass setPendingActions=null where there's no confirm
 // UI — confirm mode then skips writes entirely.
 // ctx: { chatId } — lets attach_photo find photos in the current thread.
-// Returns { applied: [description…], queued: n } so the caller can show the
-// user visible proof of what was ACTUALLY saved (not just what the AI claims).
+//
+// Returns { applied: [description…], queued: n, skipped: [reason…] } so the
+// caller can show the user visible proof of what was ACTUALLY saved (not just
+// what the AI claims) — AND, now, of what silently wasn't. `skipped` is purely
+// ADDITIVE: chat.jsx, garden.jsx and inventory.jsx read only applied/queued
+// (and a test asserts that shape), so they keep working untouched.
+//
+// Previously an action whose target didn't exist — a hallucinated id, or an
+// item deleted since — resolved to null and was dropped without a word, while
+// the model's reply still said "done!". That is the single failure the user
+// can't detect, so it is now reported instead.
 async function handleAiActions(actions, setPendingActions, ctx = {}) {
-  const result = { applied: [], queued: 0 };
+  const result = { applied: [], queued: 0, skipped: [] };
   if (!actions || !actions.length) return result;
   const confirmMode = getAiWriteMode() === "confirm";
   const resolved = [];
-  for (const action of actions) {
+  for (const raw of actions) {
+    // Schema guard runs FIRST, so an invented field can't reach a resolver,
+    // the duplicate guard, the confirm banner's preview, or a write.
+    const { fields, dropped } = sanitizeActionFields(raw.type, raw.fields);
+    if (dropped.length) {
+      result.skipped.push(
+        `Ignored ${dropped.length === 1 ? "a field" : `${dropped.length} fields`} this app doesn't ` +
+          `have${actionTargetRef(raw)}: ${dropped.join(", ")}.`
+      );
+    }
+    const action = raw.fields ? { ...raw, fields } : raw;
+    const nameKeys = ACTION_NAME_FIELDS[action.type];
+    if (nameKeys) {
+      const named = nameKeys.some(
+        (k) => fields && fields[k] != null && String(fields[k]).trim() !== ""
+      );
+      if (!named) {
+        result.skipped.push(describeSkippedAction(action, "it arrived with no name to save it under"));
+        continue;
+      }
+    } else if (raw.fields && Object.keys(raw.fields).length && fields && !Object.keys(fields).length) {
+      // An UPDATE_* that sent fields, but not one of them real, has nothing
+      // left to do — writing the record back unchanged would be a lie.
+      result.skipped.push(describeSkippedAction(action, "none of the fields it sent exist in this app"));
+      continue;
+    }
     const r = await resolveAction(action, ctx);
-    if (r) resolved.push(r);
+    if (r) {
+      resolved.push(r);
+      continue;
+    }
+    // The resolvers return null for exactly one reason: no such target.
+    result.skipped.push(
+      describeSkippedAction(
+        action,
+        action.type === "attach_photo" || action.type === "set_cover"
+          ? "that item isn't in your garden, or there's no photo in this chat to use"
+          : "nothing in your garden matches that id or name"
+      )
+    );
   }
   if (!resolved.length) return result;
   if (confirmMode) {

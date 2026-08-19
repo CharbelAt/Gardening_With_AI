@@ -566,10 +566,25 @@ input, textarea, select, button { font-size: var(--fs-body); }
   border-bottom-left-radius: var(--sp-1);
 }
 
-.bubble-text { overflow-wrap: anywhere; }
-.bubble-text p:first-child { margin-top: 0; }
-.bubble-text p:last-child { margin-bottom: 0; }
+/* .bubble keeps white-space: pre-wrap for renderMarkdownSafe's FALLBACK path
+   (escaped text + <br>, used when marked/DOMPurify didn't load). Rendered
+   markdown must not inherit it: marked leaves a newline between every block
+   tag, which pre-wrap turns into real blank space — and the newline between
+   </thead> and <tbody> would become a text node that splits the scrollable
+   table below into two mis-aligned anonymous tables. Nothing is lost: marked
+   runs with breaks:true, so the user's own newlines are already <br>.
+   overflow-wrap/word-break are what stop a bare URL or a 40-character
+   chemical name from forcing the bubble wider than its max-width. */
+.bubble-text { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+/* Whatever markdown put first/last (heading, list, table — not just a
+   paragraph) sits flush against the bubble's own padding. */
+.bubble-text > :first-child { margin-top: 0; }
+.bubble-text > :last-child { margin-bottom: 0; }
 .bubble-text a { color: var(--primary-soft); }
+/* --primary-soft is a mid green: readable on the assistant bubble in both
+   themes, nearly invisible on the user bubble's green gradient, where the
+   bubble's own text colour plus an underline is the legible choice. */
+.bubble.user .bubble-text a { color: inherit; text-decoration: underline; }
 
 /* Selection re-enabled: there's a Copy button on each reply, but people
    still expect to select/copy a piece of it by hand, same as any text. */
@@ -578,6 +593,170 @@ input, textarea, select, button { font-size: var(--fs-body); }
   user-select: text;
   -webkit-touch-callout: default;
 }
+
+/* ---------- markdown inside a bubble (renderMarkdownSafe output) ----------
+
+   MessageBubble injects marked+DOMPurify HTML straight into .bubble-text, so
+   every element below arrives without a class and without a wrapper to hang
+   layout on — these element selectors are the only hook there is.
+
+   The chrome (cell fills, hairlines, code backgrounds, quote bars) is mixed
+   from currentColor rather than from --border/--surface-2 because the exact
+   same markup renders on two very different backgrounds — the assistant
+   bubble (--bubble-ai) and the user bubble's green gradient — in two themes.
+   currentColor is the one value that is correct in all four combinations. */
+
+/* A model heading is a section label inside a chat bubble, never a page
+   title: h1 lands one step above body (18px) and the ramp flattens fast, so
+   a reply that opens with "# Watering" can't look like a different screen. */
+.bubble-text h1,
+.bubble-text h2,
+.bubble-text h3,
+.bubble-text h4,
+.bubble-text h5,
+.bubble-text h6 {
+  margin: var(--sp-3) 0 var(--sp-1);
+  line-height: var(--lh-heading);
+  letter-spacing: var(--tracking-headline);
+  font-weight: var(--fw-semibold);
+}
+
+.bubble-text h1 { font-size: var(--fs-title-3); }
+.bubble-text h2 { font-size: var(--fs-headline); }
+.bubble-text h3 { font-size: var(--fs-body); }
+.bubble-text h4 { font-size: var(--fs-callout); }
+.bubble-text h5,
+.bubble-text h6 { font-size: var(--fs-subhead); color: inherit; opacity: 0.85; }
+
+.bubble-text p { margin: 0 0 var(--sp-2); }
+
+/* 1.35em rather than the browser's 40px: on a 320px screen that default eats
+   an eighth of the bubble, and a nested level gets less again so a three-deep
+   care plan still starts near the left edge. */
+.bubble-text ul,
+.bubble-text ol { margin: var(--sp-2) 0; padding-left: 1.35em; }
+.bubble-text li { margin: var(--sp-1) 0; }
+.bubble-text li > ul,
+.bubble-text li > ol { margin: var(--sp-1) 0; padding-left: 1.1em; }
+.bubble-text li::marker { color: color-mix(in srgb, currentColor 70%, transparent); }
+
+.bubble-text blockquote {
+  margin: var(--sp-2) 0;
+  padding: var(--sp-1) 0 var(--sp-1) var(--sp-3);
+  border-left: 3px solid color-mix(in srgb, currentColor 35%, transparent);
+  opacity: 0.9;
+}
+
+/* A paragraph's bottom margin is for the NEXT paragraph — inside a quote or a
+   loose list item there isn't one, so it would just pad the box out. */
+.bubble-text blockquote > :last-child,
+.bubble-text li > p:last-child { margin-bottom: 0; }
+
+.bubble-text hr {
+  height: 0;
+  margin: var(--sp-3) 0;
+  border: none;
+  border-top: var(--hairline) solid color-mix(in srgb, currentColor 25%, transparent);
+}
+
+/* A remote image in a reply is sized by the bubble, not the other way round. */
+.bubble-text img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: var(--sp-2) 0;
+  border-radius: var(--r-md);
+}
+
+.bubble-text code,
+.bubble-text kbd,
+.bubble-text samp {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+/* A fenced block SCROLLS, it doesn't wrap: soft-wrapping code destroys the
+   indentation and splits long lines, so what the user copies out is wrong. */
+.bubble-text pre {
+  max-width: 100%;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border: var(--hairline) solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: var(--r-md);
+  font-size: var(--fs-footnote);
+  line-height: var(--lh-body);
+}
+
+/* Inside a block the <code> is just the text — the <pre> owns the box. */
+.bubble-text pre code {
+  display: block;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Wide tables scroll INSIDE the bubble instead of stretching it past the
+   screen. There is no wrapper element to scroll (the markup comes from the
+   model), so display:block turns the <table> itself into the scroll
+   container; the browser then re-wraps its thead/tbody in ONE anonymous
+   table box, which is what keeps the columns aligned. That only holds
+   because .bubble-text resets white-space above — under pre-wrap the
+   whitespace between </thead> and <tbody> would generate an anonymous cell
+   and split the table in two, staggering the columns.
+   Trade-off: a display:block table no longer stretches to the bubble's
+   width, so a narrow two-column table sits at its natural width, left
+   aligned, instead of filling the bubble. That is the cost of getting a
+   scroll container without touching the markup. */
+.bubble-text table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  margin: var(--sp-2) 0;
+  /* Inherited by the anonymous table box, which is what actually lays out. */
+  border-collapse: collapse;
+  font-size: var(--fs-footnote);
+  line-height: var(--lh-heading);
+}
+
+.bubble-text th,
+.bubble-text td {
+  /* Without a floor, auto table layout squeezes four columns down to their
+     longest word and the table never scrolls — it just becomes unreadable.
+     6ch keeps cells legible and lets the overflow happen, which is what the
+     scroll container above is for. */
+  min-width: 6ch;
+  padding: var(--sp-1) var(--sp-2);
+  border: var(--hairline) solid color-mix(in srgb, currentColor 22%, transparent);
+  text-align: left;
+  vertical-align: top;
+}
+
+.bubble-text th {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-weight: var(--fw-semibold);
+  /* Headers are short; keeping them on one line stops "Watering interval"
+     from setting a two-line row height for the whole table. */
+  white-space: nowrap;
+}
+
+/* A reply that is mostly a table or a code block gets the extra 11% the
+   speech-bubble shape was holding back — the scroll container still handles
+   anything wider. Browsers without :has() simply drop the rule and keep 85%. */
+.bubble.assistant:has(table),
+.bubble.assistant:has(pre) { max-width: 96%; }
 
 .bubble.typing { display: flex; gap: var(--sp-1); padding: var(--sp-3) var(--sp-4); }
 .typing-dot {
@@ -2666,3 +2845,121 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .today-more:hover { opacity: 0.8; }
 .today-more:active { transform: scale(var(--press-scale-subtle)); }
 .today-more i { font-size: var(--fs-caption); }
+
+/* ---------- "Talking to Sprout" guide (guide.jsx) ---------- */
+
+/* Same shell as the help manual — it is the other half of the same manual,
+   and the two should not look like different apps. */
+.guide-modal { max-width: 440px; max-height: 80vh; overflow-y: auto; }
+
+.guide-content h3 {
+  margin: var(--sp-5) 0 var(--sp-2);
+  font-size: var(--fs-headline);
+  line-height: var(--lh-heading);
+  letter-spacing: var(--tracking-headline);
+  color: var(--primary-soft);
+}
+
+.guide-content p { margin: 0 0 var(--sp-2); font-size: var(--fs-callout); color: var(--text-dim); line-height: var(--lh-body); }
+.guide-lead { margin-bottom: var(--sp-2); }
+
+/* Instructional text worth selecting and copying — same exception the help
+   manual and codex bodies get from the app-wide selection block. Scoped to
+   the prose: the example buttons stay unselectable so a long-press on one
+   pops nothing. */
+.guide-content p,
+.guide-content li,
+.guide-content h3 {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+.guide-caps,
+.guide-list {
+  margin: 0 0 var(--sp-3);
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-callout);
+  line-height: var(--lh-body);
+  color: var(--text-dim);
+}
+
+.guide-caps li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.guide-caps i { flex-shrink: 0; margin-top: 2px; color: var(--primary-soft); }
+
+/* Hanging bullets: the em-dash-free version of a <ul> that still lines its
+   text up in one column on a narrow screen. */
+.guide-list li { position: relative; margin-bottom: var(--sp-2); padding-left: var(--sp-4); }
+.guide-list li::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0.62em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--primary-soft);
+}
+
+.guide-group { margin-bottom: var(--sp-4); }
+
+.guide-group-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.guide-group-title i { color: var(--primary-soft); font-size: var(--fs-footnote); }
+
+.guide-examples { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+/* A real button, full width, 44px tall: these are the things the user is
+   meant to tap, so they get the hit area the rest of the app uses. */
+.guide-example {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  border: var(--hairline) solid color-mix(in srgb, var(--primary) 35%, var(--border));
+  border-radius: var(--r-md);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-callout);
+  line-height: var(--lh-heading);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-out);
+}
+
+.guide-example:hover { border-color: var(--primary); }
+.guide-example:active { transform: scale(var(--press-scale)); }
+.guide-example-text { flex: 1; min-width: 0; }
+.guide-example-note { display: block; margin-top: 2px; font-size: var(--fs-caption); color: var(--text-faint); }
+.guide-example > i { flex-shrink: 0; color: var(--primary-soft); font-size: var(--fs-footnote); }
+
+/* Starter chips under the empty chat state. Centred under the empty-state
+   copy, and reusing .followup-chip so a suggestion looks the same whether it
+   came from this guide or from the model's own follow-ups. */
+.guide-hints {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
