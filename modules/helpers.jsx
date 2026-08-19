@@ -40,6 +40,57 @@ const CONTEXT_MIN_MESSAGES = 12; // floor: always kept even if they blow the bud
 const CONTEXT_MESSAGE_CAP = 400; // ceiling on message COUNT, independent of size
 const CONTEXT_LIMIT = CONTEXT_MESSAGE_CAP; // back-compat: the old global name still resolves
 
+// ---------- the same three numbers, for "act" (command) requests ----------
+//
+// THE BUG THESE FIX (user: "'The AI providers are unavailable right now' way
+// too often when I ask it to add pumpkin seeds to the to-get list"). The
+// budget above is right for a QUESTION and catastrophic for a COMMAND, because
+// the two go to different provider chains:
+//
+//   * A command is routed by detectChatMode() to the server's "act" chain,
+//     whose Groq entry (openai/gpt-oss-20b) is metered by Groq's free tier at
+//     ~8,000 tokens per MINUTE — and Groq reserves the REQUESTED max_tokens
+//     against that minute up front, before generating anything (server.js:
+//     GROQ_MAX_TOKENS_ACT = 2048). So the real ceiling for one act request is
+//     prompt + 2048 ≤ 8000, i.e. a prompt of ~5,900 tokens for a SINGLE
+//     command in a minute, or ~1,950 if two commands land in the same minute.
+//     A 48,000-token history is not "a bit over" that — it is 6× Groq's whole
+//     minute, so the entry 429s outright and every 429 is one more step down
+//     the chain toward "no provider answered".
+//   * A command also doesn't NEED the thread. "Add pumpkin seeds to the to-get
+//     list" is self-contained; the only history it needs is enough to resolve a
+//     pronoun ("add it to the list", "the other one too"), which is the last
+//     couple of exchanges — not the last two hundred.
+//
+// The numbers below are picked so the WHOLE act payload — lean system prompt
+// (~1.1k) + live garden snapshot (~0.6k, capped, see SNAPSHOT_ITEM_CAP) +
+// history (≤900) + name hints — lands around 2.5–3k tokens. With Groq's 2048
+// reservation that is ~5k of the 8k minute: one command comfortably served,
+// ~3k of headroom left over, and no single request that Groq must refuse.
+// (Groq is now SECOND in the act chain behind Gemini flash-lite, which is
+// metered per request/day rather than per minute — but "fits in Groq's minute"
+// is still the number that decides whether the fallback can catch anything.)
+//
+// Chat keeps the generous budget above: a gardening question genuinely does
+// benefit from the whole thread, and it is routed to chains (Cerebras 1M/day,
+// Gemini per-request) with room for it.
+const CONTEXT_TOKEN_BUDGET_ACT = 900; // ≈3.6k characters of replayed history
+const CONTEXT_MIN_MESSAGES_ACT = 4; // floor: the last two exchanges, for "add IT to the list"
+const CONTEXT_MESSAGE_CAP_ACT = 20; // ceiling on COUNT (20 tiny turns still can't sprawl)
+
+// Per-section cap on how many items the LIVE GARDEN DATA snapshot LISTS. The
+// counts in each heading are always the real totals (see buildKnowledgeContext)
+// — only the enumeration is cut, and the cut is announced, so "what do I have?"
+// can never be answered wrongly from a truncated list.
+//
+// chat is set high enough that an ordinary garden is never truncated at all
+// (truncation is a last resort for a genuinely huge one); act is tight because
+// a command needs the ids of the items it might be about, not a catalogue.
+// Ordering (pinned → urgent → recently touched) is what makes the tight cap
+// safe: anything the user just named survives it, always.
+const SNAPSHOT_ITEM_CAP = 40;
+const SNAPSHOT_ITEM_CAP_ACT = 8;
+
 // Predefined tag sets per module. Users can also type any custom tag, and the
 // AI can both use these and invent new ones (kept short + lowercase).
 const PRESET_TAGS = {
@@ -72,8 +123,21 @@ function getDefaultLocation() {
   return localStorage.getItem(LS_DEFAULT_LOCATION) || "";
 }
 
-const SYSTEM_PROMPT_BASE =
-  "You are Sprout, a friendly, knowledgeable gardening companion. Give practical, " +
+// ---------- the system prompt, in NAMED PIECES ----------
+//
+// Composed rather than written twice. "act" (a command) and "chat" (a question)
+// need different amounts of the same instructions, and the one thing that must
+// never happen is two hand-maintained copies of a 3k-token prompt drifting
+// apart — a rule fixed in one wall and not the other is worse than no rule.
+// So every piece below is written ONCE and the two modes are assembled from
+// them. SYSTEM_PROMPT_BASE is still byte-for-byte the string it always was.
+const PROMPT_PERSONA = "You are Sprout, a friendly, knowledgeable gardening companion. ";
+
+// The advisory half: only worth its ~150 tokens when the user actually asked
+// something. A command ("add pumpkin seeds") has no species to identify, no
+// symptoms to describe and no source to cite.
+const PROMPT_ADVICE =
+  "Give practical, " +
   "concrete advice (watering, light, soil, pests, timing) suited to home gardeners. " +
   "If you're not fully confident about a specific fact — exact species identification, " +
   "disease diagnosis, or precise care details — say so plainly rather than guessing " +
@@ -83,12 +147,32 @@ const SYSTEM_PROMPT_BASE =
   "change your answer (which plant or variety, indoor vs outdoor, their climate/location, " +
   "what the symptoms actually look like and when they started), ask ONE short clarifying " +
   "question first instead of guessing — and in that reply emit no action lines. " +
-  "When the detail doesn't change the answer, just answer. " +
+  "When the detail doesn't change the answer, just answer. ";
+
+// What replaces it in act mode: the job, in two sentences. The "ask instead of
+// guessing" half of PROMPT_ADVICE survives here in the form that matters for a
+// command — which ITEM, not which fact.
+const PROMPT_ACT_FOCUS =
+  "The user has just given you a COMMAND about their own garden data. Carry it out: emit the " +
+  "matching action line(s) per the formulas below, and keep your visible text to one or two " +
+  "short sentences confirming what you did. If you cannot tell which item they mean, ask ONE " +
+  "short question instead and emit no action line at all. ";
+
+// Both modes: this is the "Lenovo the fungicide" prior, and it bites hardest on
+// a command (a wrongly-resolved name is a wrongly-written record).
+const PROMPT_NAMES =
   "NAMES: item names in the user's own garden data always refer to their own items — when a " +
   "name collides with a famous real-world company/brand/celebrity/place, the user's item wins " +
-  "unless they clearly mean the outside entity. " +
+  "unless they clearly mean the outside entity. ";
+
+// One sentence, and it only does anything when a LOCAL WEATHER block is
+// actually present, so it stays in both modes.
+const PROMPT_WEATHER =
   "WEATHER: when a LOCAL WEATHER block is provided, let it drive watering, spraying and frost/" +
   "heat advice instead of generic seasonal guidance.";
+
+const SYSTEM_PROMPT_BASE = PROMPT_PERSONA + PROMPT_ADVICE + PROMPT_NAMES + PROMPT_WEATHER;
+const SYSTEM_PROMPT_BASE_ACT = PROMPT_PERSONA + PROMPT_ACT_FOCUS + PROMPT_NAMES + PROMPT_WEATHER;
 
 // ---------- small formatting helpers ----------
 
@@ -429,13 +513,67 @@ function tagsLabel(item) {
   return tags.length ? ` [tags: ${tags.join(", ")}]` : "";
 }
 
+// ---------- snapshot truncation ----------
+//
+// A snapshot that lists EVERY plant, tool, routine, to-do and to-get item with
+// all of its detail is a few hundred tokens for a small garden and several
+// THOUSAND for a real one — on every single request, including "add pumpkin
+// seeds to the to-get list". These two helpers cap the LIST while leaving the
+// COUNT alone, which is the only way to shrink it without breaking the one
+// thing the snapshot exists for: being able to answer "what do I have?"
+// correctly. The heading always carries the true total, the cut is always
+// announced, and the ordering below decides what survives.
+
+// Pinned first (the user just named it — see findEntityMatches), then most
+// urgent/most recently touched by the section's own score, then original order
+// as a stable tiebreak. `pinned` is a Set of "kind:id" keys.
+function rankSnapshotItems(items, kind, pinned, score) {
+  return (items || [])
+    .map((item, i) => ({
+      item,
+      i,
+      pin: pinned && pinned.has(`${kind}:${item.id}`) ? 1 : 0,
+      s: score ? score(item) || 0 : 0,
+    }))
+    .sort((a, b) => b.pin - a.pin || b.s - a.s || a.i - b.i)
+    .map((x) => x.item);
+}
+
+// Renders at most `cap` of the ranked items and, when anything was left out,
+// says so IN THE MODEL'S TERMS: the number is complete, the list is not, and
+// the way to reach an unlisted item is to ask — never to guess an id.
+function snapshotList(ranked, cap, render, joiner) {
+  const shown = ranked.slice(0, cap);
+  const hidden = ranked.length - shown.length;
+  const body = shown.map(render).join(joiner);
+  if (hidden <= 0) return body;
+  return (
+    body +
+    joiner +
+    `… and ${hidden} more not listed here (the count in this heading is the complete, exact ` +
+    "total — the LIST is shortened, not the data. If you need one that isn't shown, ask the " +
+    "user for it by name; never guess its id)"
+  );
+}
+
 // Read-only snapshot of the user's data, injected into the system prompt so
 // the AI can answer from what is actually stored without any tool-calling
 // machinery. Rebuilt from IndexedDB on EVERY request (and every continuation
 // round, after the previous round's writes landed) — the heavy framing below
 // exists because a model that is merely SHOWN data still tends to trust what
 // it remembers saying earlier over what the app actually holds.
-async function buildKnowledgeContext() {
+//
+// opts (all optional — no-arg calls behave exactly as they always did):
+//   mode:   "act" → the tight per-section cap; anything else → the generous one
+//   pinned: Set of "kind:id" (from entityMatchKeys) that must never be cut
+async function buildKnowledgeContext(opts) {
+  const mode = (opts && opts.mode) === "act" ? "act" : "chat";
+  const cap = mode === "act" ? SNAPSHOT_ITEM_CAP_ACT : SNAPSHOT_ITEM_CAP;
+  const pinned = (opts && opts.pinned) || null;
+  return buildKnowledgeContextInner(cap, pinned);
+}
+
+async function buildKnowledgeContextInner(cap, pinned) {
   const [tools, routines, plants, shopping, todos] = await Promise.all([
     getAllTools(),
     getAllRoutines(),
@@ -449,70 +587,112 @@ async function buildKnowledgeContext() {
   // memory), while "Plants (0): none" is a fact it can answer from.
   const parts = [];
 
+  // Every list below is ranked then capped by the two helpers above. The
+  // counts in the headings come from the FULL arrays, never from the shortened
+  // list — that is what keeps "what do I have?" answerable from a cut snapshot.
+
+  // To-dos: overdue first, then soonest due, then the undated ones.
   const openTodos = todos.filter((t) => !t.done);
+  const rankedTodos = rankSnapshotItems(openTodos, "todo", pinned, (t) => {
+    const d = todoDueDelta(t.dueDate);
+    return d === null ? -1e9 : -d; // most overdue = biggest score; undated last
+  });
   parts.push(
     `To-do, one-off tasks (${openTodos.length} open, ${todos.length - openTodos.length} done): ` +
       (openTodos.length
-        ? openTodos
-            .map((t) => {
+        ? snapshotList(
+            rankedTodos,
+            cap,
+            (t) => {
               const delta = todoDueDelta(t.dueDate);
               const due = t.dueDate ? `, due ${t.dueDate}${delta !== null && delta < 0 ? " OVERDUE" : ""}` : "";
               return `id:${t.id} "${t.text}"${due}${t.notes ? ` (${t.notes})` : ""}`;
-            })
-            .join(", ")
+            },
+            ", "
+          )
         : "none open")
   );
 
+  // To-get: still-needed items before already-bought ones, newest first.
+  const rankedShopping = rankSnapshotItems(shopping, "toget", pinned, (s) =>
+    (s.done ? 0 : 1e12) + (s.createdAt || 0)
+  );
   parts.push(
     `To-get, shopping (${shopping.length}): ` +
       (shopping.length
-        ? shopping
-            .map((s) => `id:${s.id} "${s.name}" x${s.quantity}${s.done ? " [BOUGHT]" : " [open]"}`)
-            .join(", ")
+        ? snapshotList(
+            rankedShopping,
+            cap,
+            (s) => `id:${s.id} "${s.name}" x${s.quantity}${s.done ? " [BOUGHT]" : " [open]"}`,
+            ", "
+          )
         : "empty")
   );
 
+  // Tools: most recently used, else most recently added.
+  const rankedTools = rankSnapshotItems(tools, "tool", pinned, (t) =>
+    Math.max(t.lastUsed || 0, t.createdAt || 0)
+  );
   parts.push(
     `Tools/supplies (${tools.length}): ` +
       (tools.length
-        ? tools
-            .map((t) => {
+        ? snapshotList(
+            rankedTools,
+            cap,
+            (t) => {
               const extras = [t.condition, t.location ? `stored: ${t.location}` : "", t.brand]
                 .filter(Boolean)
                 .join(", ");
               return `id:${t.id} "${t.name}" x${t.quantity}${extras ? ` (${extras})` : ""}${tagsLabel(t)}`;
-            })
-            .join(", ")
+            },
+            ", "
+          )
         : "none")
   );
 
+  // Routines: everything DUE first (that's what a user is most likely to be
+  // completing), then longest-since-done.
+  const rankedRoutines = rankSnapshotItems(routines, "routine", pinned, (r) =>
+    (isRoutineDue(r) ? 1e15 : 0) - (r.lastDone || 0)
+  );
   parts.push(
     `Routines (${routines.length}): ` +
       (routines.length
-        ? routines
-            .map((r) => {
+        ? snapshotList(
+            rankedRoutines,
+            cap,
+            (r) => {
               const status = isRoutineDue(r) ? "DUE" : "not due";
               const last = r.lastDone ? new Date(r.lastDone).toLocaleDateString() : "never";
               const link = r.plantId ? `, linked to plant id:${r.plantId}${r.careAction ? ` (${r.careAction})` : ""}` : "";
               return `id:${r.id} "${r.task}" (every ${r.intervalDays}d, last done ${last}, ${status}${link})${tagsLabel(r)}`;
-            })
-            .join("; ")
+            },
+            "; "
+          )
         : "none")
   );
 
+  // Plants: most recently touched (watered/fertilized/added) first — the
+  // longest lines in the snapshot, so this is where a cap saves the most.
+  const rankedPlants = rankSnapshotItems(plants, "plant", pinned, (p) =>
+    Math.max(p.lastWatered || 0, p.lastFertilized || 0, p.createdAt || 0)
+  );
   parts.push(
     `Plants (${plants.length}):` +
       (plants.length
         ? "\n" +
-          plants
-            .map((p) => {
+          snapshotList(
+            rankedPlants,
+            cap,
+            (p) => {
               const w = p.lastWatered ? new Date(p.lastWatered).toLocaleDateString() : "never";
               const f = p.lastFertilized ? new Date(p.lastFertilized).toLocaleDateString() : "never";
               return `- id:${p.id} "${p.name}" | location: ${p.location || "unknown"} | planted: ${
                 p.plantingDate || "unknown"
               } | last watered: ${w} | last fertilized: ${f}${tagsLabel(p)} | notes: ${p.notes || "none"}`;
-            })
-            .join("\n")
+            },
+            "\n"
+          )
         : " none")
   );
 
@@ -586,14 +766,22 @@ function pushEntityHit(hits, word, entry) {
 }
 
 // Scans `text` (the user's latest message, or a photo caption) for names that
-// exist in THIS user's own data and returns a compact system-prompt block, or
-// "" when nothing matches — a deliberate no-op (zero extra tokens) that keeps
-// this feature free for every message that doesn't need it. Wrapped in
-// try/catch: a weirdly-named item (regex metacharacters) must never be able
-// to break chat.
-async function buildEntityHints(text) {
+// exist in THIS user's own data. Returns the matches as DATA —
+// [{ word, entries: [{kind, id, name, label, detail}] }], newest-first by
+// specificity — or [] when nothing matches.
+//
+// Split out of buildEntityHints (which now just formats what this returns) so
+// there is ONE name-matching implementation with two consumers: the hint block
+// below, and buildKnowledgeContext's snapshot truncation, which uses these same
+// matches to PIN whatever the user just named so a cap can never cut it out.
+// Two matchers would eventually disagree, and the way they'd disagree is
+// "Sprout can't see the thing you just asked about".
+//
+// Wrapped in try/catch: a weirdly-named item (regex metacharacters) must never
+// be able to break chat.
+async function findEntityMatches(text) {
   const msg = (text || "").toLowerCase();
-  if (!msg.trim()) return "";
+  if (!msg.trim()) return [];
   try {
     // One batch, one read each — mirrors buildKnowledgeContext's Promise.all
     // so this never doubles the IndexedDB traffic of an ordinary turn.
@@ -677,41 +865,68 @@ async function buildEntityHints(text) {
         }
       }
     }
-    if (hits.size === 0) return "";
+    if (hits.size === 0) return [];
 
     // Longest matched word first = most specific / least likely coincidental;
     // cap at 6 so this can never balloon into a token sink on a busy garden.
-    const words = [...hits.keys()].sort((a, b) => b.length - a.length).slice(0, 6);
-
-    const lines = words.map((word) => {
-      const entries = hits.get(word);
-      const phrases = entries.map((e) => {
-        const detail = e.detail ? ` (${e.detail})` : "";
-        return `their ${e.label} id:${e.id} "${e.name}"${detail}`;
-      });
-      const ambiguous = phrases.length > 1;
-      return (
-        `- "${word}" → ${phrases.join(" OR ")}` +
-        (ambiguous ? " — ask which one is meant if your answer would differ" : "")
-      );
-    });
-
-    return (
-      "\n\n=== NAME MATCHES IN THE USER'S MESSAGE ===\n" +
-      "The user's latest message mentions names that exist in THEIR garden data. In this app " +
-      "those words mean the user's own item below — NOT a real-world company, brand, celebrity, " +
-      "or place that happens to share the name. For a product-type item, general knowledge ABOUT " +
-      "THE PRODUCT ITSELF (active ingredient, dosage, safety) is still exactly what to give — this " +
-      "rule only stops you from confusing the item's IDENTITY with an unrelated same-named entity.\n" +
-      lines.join("\n") +
-      "\nException: if the user is clearly asking about the outside entity itself (its stock price, " +
-      "its CEO, who makes it as a company) rather than their item, you may briefly answer that instead.\n" +
-      "=== END NAME MATCHES ==="
-    );
+    return [...hits.keys()]
+      .sort((a, b) => b.length - a.length)
+      .slice(0, 6)
+      .map((word) => ({ word, entries: hits.get(word) }));
   } catch (e) {
-    console.error("buildEntityHints failed:", e && e.message);
-    return "";
+    console.error("findEntityMatches failed:", e && e.message);
+    return [];
   }
+}
+
+// The matches above, as the compact system-prompt block that actually ships —
+// or "" when nothing matched, a deliberate no-op (zero extra tokens) that keeps
+// this feature free for every message that doesn't need it.
+function formatEntityHints(matches) {
+  if (!matches || !matches.length) return "";
+  const lines = matches.map(({ word, entries }) => {
+    const phrases = entries.map((e) => {
+      const detail = e.detail ? ` (${e.detail})` : "";
+      return `their ${e.label} id:${e.id} "${e.name}"${detail}`;
+    });
+    const ambiguous = phrases.length > 1;
+    return (
+      `- "${word}" → ${phrases.join(" OR ")}` +
+      (ambiguous ? " — ask which one is meant if your answer would differ" : "")
+    );
+  });
+
+  return (
+    "\n\n=== NAME MATCHES IN THE USER'S MESSAGE ===\n" +
+    "The user's latest message mentions names that exist in THEIR garden data. In this app " +
+    "those words mean the user's own item below — NOT a real-world company, brand, celebrity, " +
+    "or place that happens to share the name. For a product-type item, general knowledge ABOUT " +
+    "THE PRODUCT ITSELF (active ingredient, dosage, safety) is still exactly what to give — this " +
+    "rule only stops you from confusing the item's IDENTITY with an unrelated same-named entity.\n" +
+    lines.join("\n") +
+    "\nException: if the user is clearly asking about the outside entity itself (its stock price, " +
+    "its CEO, who makes it as a company) rather than their item, you may briefly answer that instead.\n" +
+    "=== END NAME MATCHES ==="
+  );
+}
+
+// Unchanged signature and unchanged output — text in, hint block (or "") out.
+// Every existing caller (buildContextMessages, buildChatVisionPrompt, the
+// tests) keeps working exactly as before; it is just no longer the only way to
+// get at the matches.
+async function buildEntityHints(text) {
+  return formatEntityHints(await findEntityMatches(text));
+}
+
+// "kind:id" keys for every item the user's message named — the set
+// buildKnowledgeContext pins to the front of its lists so truncation can never
+// drop the one thing the request is about.
+function entityMatchKeys(matches) {
+  const keys = new Set();
+  for (const m of matches || []) {
+    for (const e of m.entries || []) keys.add(`${e.kind}:${e.id}`);
+  }
+  return keys;
 }
 
 // The same snapshot, one line, for the USER — so "what can Sprout actually see
@@ -892,6 +1107,16 @@ const ACTION_CONVENTIONS =
 // before ACTION_REMINDER) because that is where models weight hardest — the
 // same reason ACTION_REMINDER itself lives there. Also reused, condensed, by
 // the photo path in buildChatVisionPrompt.
+// Command mode gets the compressed version of the rule below (~40 tokens vs
+// ~360). A command still has to resolve "add it to the list" against the
+// thread and use real ids from the snapshot — it just doesn't need the full
+// reasoning spelled out, and on an ~8k-tokens-per-minute budget the long form
+// is a meaningful slice of what's left after the formulas.
+const TWO_SOURCE_RULE_ACT =
+  "USE BOTH SOURCES: the LIVE GARDEN DATA block is the authority on what exists and its ids; " +
+  "this conversation is the authority on what the user means right now (resolve \"it\"/\"that\" " +
+  "against the last few turns). If the thing isn't in the snapshot, don't invent an id — ask.";
+
 const TWO_SOURCE_RULE =
   "TWO SOURCES OF TRUTH — you must use BOTH; neither replaces the other:\n" +
   "1. LIVE GARDEN DATA (above) — the authority on WHAT EXISTS and its current values: which items " +
@@ -992,15 +1217,20 @@ function contextMessageContent(m) {
 //              are, so a thread of thousands of one-word turns still produces a
 //              request of sane shape.
 // Returns the slice in chronological order (same as history.slice(-n) did).
-function sliceContextHistory(history, budget) {
+// `act` picks the tight command-mode floor/ceiling to go with the tight budget.
+// All three have to move together: a 900-token budget with the 12-message floor
+// would still admit 12 long messages and blow straight past it.
+function sliceContextHistory(history, budget, act) {
   const all = history || [];
   const cap = budget == null ? CONTEXT_TOKEN_BUDGET : budget;
+  const floor = act ? CONTEXT_MIN_MESSAGES_ACT : CONTEXT_MIN_MESSAGES;
+  const ceiling = act ? CONTEXT_MESSAGE_CAP_ACT : CONTEXT_MESSAGE_CAP;
   let used = 0;
   let kept = 0;
-  for (let i = all.length - 1; i >= 0 && kept < CONTEXT_MESSAGE_CAP; i--) {
+  for (let i = all.length - 1; i >= 0 && kept < ceiling; i--) {
     const cost = estimateTokens(contextMessageContent(all[i]));
     // The floor is checked BEFORE the budget so nothing can undercut it.
-    if (kept >= CONTEXT_MIN_MESSAGES && used + cost > cap) break;
+    if (kept >= floor && used + cost > cap) break;
     used += cost;
     kept++;
   }
@@ -1012,11 +1242,34 @@ function sliceContextHistory(history, budget) {
 // is gone — voice input is now dictation into this same typed chat); routing
 // still happens server-side via the mode sent to /api/chat.
 async function buildContextMessages(history, mode) {
-  const recent = sliceContextHistory(history);
+  // WHY act mode is rationed (this is a bug fix, not an optimisation):
+  // Groq's free tier meters ~8000 tokens per MINUTE and RESERVES the requested
+  // max_tokens up front, so the real ceiling for one command is
+  //   prompt + GROQ_MAX_TOKENS_ACT(2048) <= 8000  →  prompt <= ~5900.
+  // Sending the full chat payload for "add pumpkin seeds to the to-get list"
+  // measured 8475 tokens on its own — over the whole minute's budget before the
+  // reply was even counted, which is why every provider in the act chain failed
+  // and the app said "AI providers are unavailable". A command needs the real
+  // ids and the formulas; it does NOT need the whole thread or 40 items per
+  // section. Questions ("chat") keep the generous budget.
+  const act = mode === "act";
+  const recent = sliceContextHistory(
+    history,
+    act ? CONTEXT_TOKEN_BUDGET_ACT : CONTEXT_TOKEN_BUDGET,
+    act
+  );
+  // Pin whatever the latest message names so the tight act cap can never cut
+  // the very item the command is about ("add pumpkin seeds" must still see the
+  // to-get list even if the user owns 200 things).
+  const lastUserMsg = [...(history || [])].reverse().find((m) => m.role === "user");
+  const pinned =
+    act && lastUserMsg
+      ? entityMatchKeys(await findEntityMatches(lastUserMsg.text || ""))
+      : null;
   // Awaited HERE, not by the caller: the snapshot must be read after the
   // previous continuation round's writes and immediately before this request.
   // The device date lives in its header now, so it isn't repeated here.
-  const knowledge = await buildKnowledgeContext();
+  const knowledge = await buildKnowledgeContext({ mode: act ? "act" : "chat", pinned });
   // Right after the garden snapshot: the same "here is what is actually true
   // right now" material, and short enough to ride on every request. "" when
   // the user has weather off or it couldn't be fetched.
@@ -1052,15 +1305,23 @@ async function buildContextMessages(history, mode) {
   // the context most, and a same-named real-world entity is exactly the kind
   // of strong prior that needs a nudge right before the model answers, not one
   // buried under a few hundred messages of history.
-  const lastUser = [...history].reverse().find((m) => m.role === "user");
-  const entityHints = lastUser ? await buildEntityHints(lastUser.text || "") : "";
+  const entityHints = lastUserMsg ? await buildEntityHints(lastUserMsg.text || "") : "";
   if (entityHints) msgs.push({ role: "system", content: entityHints });
   // After the history, before the action reminder: the snapshot's own header
   // says "I override the conversation", which on its own makes the model drop
   // the thread. This is where that gets balanced back out — see TWO_SOURCE_RULE.
-  msgs.push({ role: "system", content: TWO_SOURCE_RULE });
+  // Act mode gets the one-line version: a command doesn't need the full
+  // epistemology, and 360 tokens is real money against an ~8k/minute budget.
+  msgs.push({ role: "system", content: act ? TWO_SOURCE_RULE_ACT : TWO_SOURCE_RULE });
   msgs.push({ role: "system", content: ACTION_REMINDER });
   return msgs;
+}
+
+// Estimated size of a built request, so the app can show the user what it is
+// actually sending (Settings › "What can Sprout see?"). Same estimator the
+// slicer uses, so the numbers agree.
+function estimateRequestTokens(msgs) {
+  return (msgs || []).reduce((n, m) => n + estimateTokens(m && m.content), 0);
 }
 
 // The vision endpoint takes ONE prompt string, not a chat-completions array,

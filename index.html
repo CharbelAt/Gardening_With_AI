@@ -35,6 +35,8 @@
      last (it references every view component). -->
 <script type="text/babel" data-presets="react" src="./modules/helpers.jsx"></script>
 <script type="text/babel" data-presets="react" src="./modules/shared-ui.jsx"></script>
+<!-- guide.jsx calls useEscapeKey (shared-ui) and is rendered by app.jsx. -->
+<script type="text/babel" data-presets="react" src="./modules/guide.jsx"></script>
 <!-- weather.jsx registers its context provider into the slot helpers.jsx
      declares, so it must load after helpers; today.jsx renders WeatherStrip,
      so it must load after weather. -->

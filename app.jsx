@@ -37,6 +37,7 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showChatList, setShowChatList] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showGuide, setShowGuide] = useState(false); // "How to talk to Sprout" (guide.jsx)
   const [loaded, setLoaded] = useState(false);
   const [theme, setTheme] = useState(getTheme());
   const [renameTarget, setRenameTarget] = useState(null);
@@ -264,6 +265,10 @@ function App() {
       )}
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+
+      {showGuide && typeof GuideView === "function" && (
+        <GuideView onNavigate={navigate} onClose={() => setShowGuide(false)} />
+      )}
 
       {showSearch && (
         <SearchOverlay

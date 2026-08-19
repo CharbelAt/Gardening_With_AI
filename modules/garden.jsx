@@ -290,7 +290,12 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
       // update to THIS plant, not add a new one — force id-based targeting.
       const updates = actions.filter((a) => a.type === "update");
       for (const action of updates) {
-        const fields = action.fields || {};
+        // Same schema guard the chat path gets (sanitizeActionFields lives in
+        // helpers.jsx). This path writes fields straight onto the record, so an
+        // invented column ("soilPh", "harvestedOn") would otherwise persist
+        // forever and be read back out of the snapshot as if it were real.
+        const { fields } = sanitizeActionFields("update", action.fields || {});
+        if (!Object.keys(fields).length) continue;
         if (getAiWriteMode() === "confirm") {
           setPendingActions((prev) => [...prev, { type: "update_plant", plant: analyzed, fields }]);
         } else {

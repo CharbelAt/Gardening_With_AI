@@ -3,7 +3,7 @@
 // this app is actively being updated — you always want the latest app.jsx
 // over a stale cached copy. The cache is only a fallback for when there's no
 // network at all. AI calls and CDN scripts always go straight to the network.
-const CACHE = "garden-companion-v18"; // v18: 5-tab redesign (Tasks merges routines+to-dos)
+const CACHE = "garden-companion-v19"; // v19: guide, max context, anti-hallucination guards
 const SHELL = [
   "./",
   "./index.html",
@@ -15,6 +15,7 @@ const SHELL = [
   "./icons/icon-512.png",
   "./modules/helpers.jsx",
   "./modules/shared-ui.jsx",
+  "./modules/guide.jsx",
   "./modules/weather.jsx",
   "./modules/notify.jsx",
   "./modules/chat.jsx",

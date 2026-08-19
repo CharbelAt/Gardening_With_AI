@@ -285,7 +285,7 @@ function SettingsBackupSection({ onCleared }) {
 // the AI-context peek is a verification tool, not a daily control (the snapshot
 // is rebuilt on every request regardless), and Codex left the bottom bar and
 // needs one entry point that isn't a search result.
-function SettingsModal({ onClose, onCleared, onShowHelp, onShowContext, onOpenCodex, theme, onThemeChange }) {
+function SettingsModal({ onClose, onCleared, onShowHelp, onShowGuide, onShowContext, onOpenCodex, theme, onThemeChange }) {
   const [apiBase, setApiBase] = useState(getSettings().apiBase);
   const [secret, setSecret] = useState(getSettings().secret);
   const [writeMode, setWriteMode] = useState(getAiWriteMode());
@@ -392,6 +392,14 @@ function SettingsModal({ onClose, onCleared, onShowHelp, onShowContext, onOpenCo
             <i className="bi bi-arrow-repeat" aria-hidden="true"></i> What can Sprout see?
           </button>
         )}
+        {/* Two different manuals: HelpModal covers getting around the app,
+            GuideView covers talking to Sprout. Kept separate so neither
+            becomes the long one nobody reads. */}
+        {onShowGuide && (
+          <button className="btn btn-ghost btn-block" onClick={onShowGuide}>
+            <i className="bi bi-chat-heart" aria-hidden="true"></i> How to talk to Sprout
+          </button>
+        )}
         <button className="btn btn-ghost btn-block" onClick={onShowHelp}>
           <i className="bi bi-question-circle" aria-hidden="true"></i> How to use Garden Companion
         </button>
@@ -467,7 +475,7 @@ function MessageBubble({ msg, onRegenerate, regenerating }) {
   return (
     <div className={`bubble ${msg.role}`}>
       {msg.kind === "image" && msg.imageThumb && (
-        <img className="bubble-img" src={msg.imageThumb} alt="uploaded plant" />
+        <img className="bubble-img" src={msg.imageThumb} alt="Photo you sent" />
       )}
       {msg.text && (
         <div className="bubble-text" dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(msg.text) }} />
