@@ -125,6 +125,15 @@ function App() {
     return startNotifyTimer();
   }, []);
 
+  // The empty chat offers "How to talk to Sprout" too (that's where the
+  // question gets asked). It signals through the window rather than a prop so
+  // ChatTab's signature stays as-is for the test harness.
+  useEffect(() => {
+    const open = () => setShowGuide(true);
+    window.addEventListener("gc:open-guide", open);
+    return () => window.removeEventListener("gc:open-guide", open);
+  }, []);
+
   async function switchChat(id) {
     setActiveChatId(id);
     localStorage.setItem(LS_ACTIVE_CHAT, String(id));
@@ -295,6 +304,10 @@ function App() {
           onShowHelp={() => {
             setShowSettings(false);
             setShowHelp(true);
+          }}
+          onShowGuide={() => {
+            setShowSettings(false);
+            setShowGuide(true);
           }}
           onShowContext={() => {
             // Same handoff as onShowHelp: the peek is its own dialog, and two

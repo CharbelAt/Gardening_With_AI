@@ -454,6 +454,19 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
             {/* guide.jsx is optional (it may not be loaded yet, or at all), so
                 the app must render an empty chat fine without it. */}
             {typeof GuideEmptyChatHints === "function" && <GuideEmptyChatHints onPick={handleStarterPick} />}
+            {/* The guide also lives in Settings, but nobody opens Settings to
+                learn how to talk to a chat box — the empty chat is where that
+                question is actually being asked, so it gets a real entry point
+                here too. Dispatched on window so chat.jsx doesn't need a new
+                prop threaded through app.jsx for one link. */}
+            {typeof GuideView === "function" && (
+              <button
+                className="btn btn-ghost small guide-open"
+                onClick={() => window.dispatchEvent(new CustomEvent("gc:open-guide"))}
+              >
+                <i className="bi bi-chat-heart" aria-hidden="true"></i> How to talk to Sprout
+              </button>
+            )}
           </div>
         )}
         {messages.map((m) => (

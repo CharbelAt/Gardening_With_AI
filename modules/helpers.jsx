@@ -1437,6 +1437,23 @@ async function buildChatVisionPrompt(caption, history) {
     '"WHEN IS IT ACTUALLY NEW?" rule above. Never a second copy of a plant already listed.\n' +
     'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "tags": ["..."]}} — same gate, for a tool ' +
     "or supply they say they just bought.\n" +
+    // The photo path used to expose only the six photo-shaped actions, so a
+    // message like "remind me to repot this next week" sent WITH a picture had
+    // no way to create the to-do — the request was silently half-served. The
+    // full index below costs ~120 tokens and closes that hole: same keywords,
+    // same JSON shapes as the typed-chat path, just listed compactly.
+    "EVERY OTHER ACTION IS ALSO AVAILABLE HERE — the user's message may ask for something the " +
+    "picture merely accompanies (\"remind me to repot this\", \"add neem oil to my shopping list\"). " +
+    "The complete set of keywords, all taking the same JSON shapes as in normal chat:\n" +
+    "  plants   — ADD_PLANT, UPDATE_PLANT\n" +
+    "  supplies — ADD_TOOL, UPDATE_TOOL, REMOVE_TOOL\n" +
+    "  routines — ADD_ROUTINE, UPDATE_ROUTINE, COMPLETE_ROUTINE\n" +
+    "  to-dos   — ADD_TODO, UPDATE_TODO, COMPLETE_TODO, REMOVE_TODO\n" +
+    "  shopping — ADD_TOGET, UPDATE_TOGET, REMOVE_TOGET\n" +
+    "  photos   — ATTACH_PHOTO, SET_COVER\n" +
+    "That is all seventeen; there are no others. Serve the WHOLE message: if it asks for a change " +
+    "the picture is only context for, emit that action line too rather than answering about the " +
+    "photo alone.\n" +
     "IDS: use ONLY ids that literally appear in the lists above. Never invent or guess a number — " +
     "the app discards an action aimed at an id that doesn't exist, so it would save nothing while " +
     "you told the user it was done.\n" +
