@@ -2963,3 +2963,68 @@ input, textarea, select, button { font-size: var(--fs-body); }
   gap: var(--sp-2);
   margin-top: var(--sp-2);
 }
+
+/* ---------- attached-photo chip (chat.jsx) ---------- */
+
+/* Replaces the old .photo-preview form. A pending photo is an ATTACHMENT on the
+   composer — one thumbnail, one label, one remove button — so the chat has a
+   single text box and a single send button at all times. */
+.photo-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-shrink: 0;
+  margin: 0 var(--gutter) var(--sp-2);
+  padding: var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+}
+
+.photo-chip img {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+}
+
+.photo-chip-label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-footnote);
+  line-height: var(--lh-heading);
+  color: var(--text-dim);
+}
+
+/* ---------- destructive rows in the AI confirm banner ---------- */
+
+/* A destructive row in the confirm banner — see isDestructiveAction() in
+   helpers.jsx. Deletion is the only irreversible thing in the app, so the row
+   reads as dangerous rather than as one more suggestion. */
+.confirm-row-danger {
+  border-top-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  margin: var(--sp-1) 0;
+}
+.confirm-row-danger > span > i { color: var(--danger); }
+
+.confirm-row-warning {
+  display: block;
+  margin-top: var(--sp-1);
+  color: var(--danger);
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  font-style: normal;
+}
+
+/* Why "Apply all" skipped the deletions. */
+.confirm-all-hint {
+  margin: var(--sp-1) 0 0;
+  text-align: right;
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}

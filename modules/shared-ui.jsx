@@ -503,7 +503,27 @@ function MessageBubble({ msg, onRegenerate, regenerating }) {
 
 // One banner for however many actions the AI proposed in a reply. Each row
 // can be applied or dismissed on its own; "Apply all" clears the queue.
+//
+// DELETIONS ARE DIFFERENT HERE, in three ways (see isDestructiveAction in
+// helpers.jsx — that predicate, not a local list, decides which rows these
+// apply to, so a REMOVE_* verb added later is covered automatically):
+//   1. the row is marked as dangerous — danger colouring, a bin icon, a
+//      "can't be undone" line, and a red button that says DELETE, not "Apply";
+//   2. tapping it opens ConfirmModal instead of writing. A destructive row
+//      therefore needs two taps in two different places on screen, so a
+//      mis-tap or a double-tap on "Apply" can never destroy a plant with a
+//      year of photo history;
+//   3. "Apply all" SKIPS them (see applyAll). A bulk button exists to save
+//      taps on safe, reversible changes; a deletion is exactly the thing that
+//      has to be looked at individually, and leaving them queued is the only
+//      outcome where a hurried tap costs the user nothing.
 function PendingActionsBanner({ actions, onResolve }) {
+  // The destructive row awaiting its second confirmation, held as the ACTION
+  // OBJECT rather than an index: the queue can grow underneath an open modal
+  // (a later AI reply appends to it), and an index would then point at a
+  // different row than the one the user is reading.
+  const [confirming, setConfirming] = useState(null);
+
   // The queue lives in view state, so leaving the view drops it — clear the
   // AI-facing copy on the way out too, or Sprout keeps warning about pending
   // changes the user can no longer see or confirm anywhere.
@@ -526,30 +546,90 @@ function PendingActionsBanner({ actions, onResolve }) {
   function dismissOne(index) {
     resolve(actions.filter((_, i) => i !== index));
   }
-  async function applyAll() {
-    for (const a of actions) await applyResolvedAction(a);
-    resolve([]);
+  // The second tap of a deletion. Re-finds the row by identity in case the
+  // queue moved while the modal was open; if it's gone, this quietly closes
+  // rather than deleting whatever now sits at that position.
+  async function confirmDelete() {
+    const a = confirming;
+    setConfirming(null);
+    const index = actions.indexOf(a);
+    if (index === -1) return;
+    await applyOne(index);
   }
+  async function applyAll() {
+    // Deliberately NOT every row: one tap must never be able to destroy
+    // several records at once. Deletions stay in the queue with their own
+    // Delete button, which still goes through ConfirmModal.
+    const kept = actions.filter((a) => isDestructiveAction(a.type));
+    for (const a of actions) {
+      if (!isDestructiveAction(a.type)) await applyResolvedAction(a);
+    }
+    resolve(kept);
+  }
+
+  const safeCount = actions.filter((a) => !isDestructiveAction(a.type)).length;
+  const deleteCount = actions.length - safeCount;
 
   return (
     <div className="confirm-banner">
       <div className="confirm-banner-title">
         <i className="bi bi-magic" aria-hidden="true"></i> Sprout suggests {actions.length === 1 ? "a change" : `${actions.length} changes`}:
       </div>
-      {actions.map((a, i) => (
-        <div key={i} className="confirm-row">
-          <span>{describeAction(a)}</span>
-          <div className="confirm-actions">
-            <button className="btn small" onClick={() => applyOne(i)}>Apply</button>
-            <button className="btn btn-ghost small" onClick={() => dismissOne(i)}>Dismiss</button>
+      {actions.map((a, i) => {
+        const destructive = isDestructiveAction(a.type);
+        return (
+          <div key={i} className={destructive ? "confirm-row confirm-row-danger" : "confirm-row"}>
+            <span>
+              {destructive && <i className="bi bi-trash3" aria-hidden="true"></i>}
+              {destructive ? " " : ""}
+              {describeAction(a)}
+              {destructive && (
+                <em className="confirm-row-warning">Permanent — this can't be undone.</em>
+              )}
+            </span>
+            <div className="confirm-actions">
+              {destructive ? (
+                <button
+                  className="btn btn-danger small"
+                  aria-label={`Delete — ${describeAction(a)}`}
+                  onClick={() => setConfirming(a)}
+                >
+                  Delete
+                </button>
+              ) : (
+                <button className="btn small" onClick={() => applyOne(i)}>Apply</button>
+              )}
+              <button className="btn btn-ghost small" onClick={() => dismissOne(i)}>Dismiss</button>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       {actions.length > 1 && (
         <div className="confirm-actions confirm-all">
-          <button className="btn small" onClick={applyAll}>Apply all</button>
+          {/* Hidden entirely when every row is a deletion — there would be
+              nothing safe left for it to apply. */}
+          {safeCount > 0 && (
+            <button className="btn small" onClick={applyAll}>
+              {deleteCount > 0 ? `Apply the ${safeCount} non-deletion${safeCount === 1 ? "" : "s"}` : "Apply all"}
+            </button>
+          )}
           <button className="btn btn-ghost small" onClick={() => resolve([])}>Dismiss all</button>
         </div>
+      )}
+      {deleteCount > 0 && actions.length > 1 && (
+        <p className="confirm-all-hint">
+          {deleteCount === 1 ? "The deletion has" : `The ${deleteCount} deletions have`} to be
+          confirmed one at a time.
+        </p>
+      )}
+      {confirming && (
+        <ConfirmModal
+          title="Delete this?"
+          message={`${describeAction(confirming)}. This is permanent — it can't be undone.`}
+          confirmLabel="Delete"
+          onConfirm={confirmDelete}
+          onCancel={() => setConfirming(null)}
+        />
       )}
     </div>
   );

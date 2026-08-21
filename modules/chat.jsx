@@ -282,7 +282,14 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     }
   }
 
+  // ONE send path for the composer. A photo attached to it rides along with
+  // whatever was typed, so there is no separate "photo send" the user has to
+  // find — the composer they were already typing in is the composer.
   function sendText() {
+    if (pendingPhoto) {
+      sendPendingPhoto(input);
+      return;
+    }
     sendMessage(input, true);
   }
 
@@ -339,17 +346,21 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
     });
   }
 
-  async function sendPendingPhoto() {
+  // The caption now comes from the ONE composer input the user already types
+  // in — an attached photo does not get a second text box of its own. Called by
+  // the normal send button / Enter, exactly like a text message.
+  async function sendPendingPhoto(rawCaption) {
     if (!pendingPhoto || busy) return;
-    const { dataUrl, base64, caption } = pendingPhoto;
+    const { dataUrl, base64 } = pendingPhoto;
     setPendingPhoto(null);
+    setInput(""); // the composer carried the caption; clear it like any send
     setError("");
     setBusy(true);
     try {
       // Whatever the user actually wrote, and nothing else — an empty string is
       // a valid caption. buildChatVisionPrompt handles a missing one without
       // assuming the photo is of a plant.
-      const text = (caption || "").trim();
+      const text = (rawCaption || "").trim();
       // The auto-title falls back to a neutral word rather than the caption:
       // titling a chat "" (autoTitleFromText of an empty string) would leave
       // the chat list with a blank row.
@@ -514,20 +525,23 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         ) : null}
         <PendingActionsBanner actions={pendingActions} onResolve={setPendingActions} />
       </div>
+      {/* An attached photo is a CHIP on the composer, not a second form: the
+          user types the caption in the same box they always type in, and the
+          same send button sends both. A photo-specific textarea + Send + Cancel
+          used to appear here, which meant two text boxes on screen at once and
+          two different ways to send. */}
       {pendingPhoto && (
-        <div className="photo-preview">
-          <img src={pendingPhoto.dataUrl} alt="Photo to send" />
-          <textarea
-            rows={2}
-            value={pendingPhoto.caption}
-            aria-label="Note for this photo (optional)"
-            onChange={(e) => setPendingPhoto({ ...pendingPhoto, caption: e.target.value })}
-            placeholder="Add a note (optional)"
-          />
-          <div className="photo-preview-actions">
-            <button className="btn" onClick={sendPendingPhoto} disabled={busy}>Send</button>
-            <button className="btn btn-ghost" onClick={() => setPendingPhoto(null)}>Cancel</button>
-          </div>
+        <div className="photo-chip" role="group" aria-label="Photo attached to your next message">
+          <img src={pendingPhoto.dataUrl} alt="Attached photo" />
+          <span className="photo-chip-label">Photo attached — add a note below, or just send.</span>
+          <button
+            className="icon-btn small"
+            onClick={() => setPendingPhoto(null)}
+            title="Remove photo"
+            aria-label="Remove attached photo"
+          >
+            <i className="bi bi-x-lg" aria-hidden="true"></i>
+          </button>
         </div>
       )}
       <VoiceListeningBar state={voice.state} seconds={voice.seconds} hint={voice.hint} live={voice.live} />
@@ -566,7 +580,7 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           ref={inputRef}
           className="text-input"
           type="text"
-          placeholder="Ask Sprout something…"
+          placeholder={pendingPhoto ? "Add a note about the photo (optional)…" : "Ask Sprout something…"}
           aria-label="Message"
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -579,7 +593,15 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
           onStateChange={setVoice}
           disabled={busy}
         />
-        <button className="btn btn-send" onClick={sendText} disabled={busy || !input.trim()} title="Send" aria-label="Send">
+        {/* A photo on its own is a valid message — an empty caption is fine, so
+            the button must not stay disabled just because nothing was typed. */}
+        <button
+          className="btn btn-send"
+          onClick={sendText}
+          disabled={busy || (!input.trim() && !pendingPhoto)}
+          title="Send"
+          aria-label="Send"
+        >
           <i className="bi bi-send-fill" aria-hidden="true"></i>
         </button>
       </div>

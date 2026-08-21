@@ -1002,12 +1002,14 @@ const ACTION_CONVENTIONS =
   "FORMULAS (copy these shapes exactly):\n" +
   'ADD_PLANT: {"fields": {"name": "...", "location": "...", "plantingDate": "YYYY-MM-DD", "notes": "...", "tags": ["..."]}}\n' +
   'UPDATE_PLANT: {"id": <plant id>, "fields": {"lastWatered": "YYYY-MM-DD", "lastFertilized": "YYYY-MM-DD", "name": "...", "location": "...", "notes": "...", "tags": ["..."]}}\n' +
+  'REMOVE_PLANT: {"id": <plant id>} — a routine linked to it survives, unlinked\n' +
   'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "notes": "...", "tags": ["..."], "brand": "...", "condition": "new|good|worn|needs repair", "location": "...", "purchaseDate": "YYYY-MM-DD", "price": 0}}\n' +
   'UPDATE_TOOL: {"id": <tool id>, "fields": {"quantity": 2, "notes": "...", "tags": ["..."], "brand": "...", "condition": "...", "location": "...", "lastUsed": "YYYY-MM-DD", "price": 0}}\n' +
   'REMOVE_TOOL: {"id": <tool id>}\n' +
   'ADD_ROUTINE: {"fields": {"task": "...", "intervalDays": 3, "plantId": <plant id>, "careAction": "water", "tags": ["..."]}}\n' +
   'UPDATE_ROUTINE: {"id": <routine id>, "fields": {"task": "...", "intervalDays": 5, "tags": ["..."]}}\n' +
   'COMPLETE_ROUTINE: {"id": <routine id>}\n' +
+  'REMOVE_ROUTINE: {"id": <routine id>} — deletes the recurring task itself (use COMPLETE_ROUTINE if they just did it this time)\n' +
   'ATTACH_PHOTO: {"plantId": <plant id>, "photoId": <optional N from "[shared photo #N]" — omit for the newest photo in this chat>}\n' +
   'SET_COVER: {"target": "plant"|"tool"|"routine", "id": <item id>, "photoId": <optional, as above>} — makes a chat photo the item\'s cover picture\n' +
   'ADD_TOGET: {"fields": {"name": "...", "quantity": 1, "notes": "..."}} — puts something on the to-get (shopping) list\n' +
@@ -1045,6 +1047,26 @@ const ACTION_CONVENTIONS =
   'real ADD_PLANT — but then give it a distinguishing name or location ("Basil (kitchen)") and say ' +
   "in your visible text that it is a second one. If the wording could mean the existing item OR a " +
   "new one, ASK which and emit no action line.\n" +
+  // Deletion is the only irreversible thing in the app, and the failure modes
+  // are specific rather than general: models reach for REMOVE+ADD to change a
+  // value, and for REMOVE to "clean up" a duplicate they think they see. Both
+  // destroy a record the user never asked to lose, so both are named here
+  // explicitly. Code backs this up — every REMOVE_* is queued for an explicit
+  // confirmation regardless of write mode (see isDestructiveAction).
+  "DELETING (REMOVE_PLANT / REMOVE_TOOL / REMOVE_ROUTINE / REMOVE_TODO / REMOVE_TOGET) — the only " +
+  "thing you can do that cannot be undone. It destroys the record and everything attached to it (a " +
+  "plant takes its photos and its whole care log with it):\n" +
+  '- Only when the user clearly asked to delete THAT specific thing ("delete the mint"). Never as ' +
+  "tidying up, never inferred.\n" +
+  '- A REWRITE IS NOT A DELETE: "rename the mint to spearmint", "it\'s on the balcony now", "make ' +
+  'that 3 bags" are UPDATE_* on the existing id. Never REMOVE_* + ADD_* to change a value — that ' +
+  "throws away the item's photos, history and dates.\n" +
+  "- NEVER DELETE TO RESOLVE A DUPLICATE: say you think it's listed twice and ask which to keep.\n" +
+  '- AMBIGUOUS WORDING GETS A QUESTION: "get rid of the basil" — the plant, the to-do about it, or ' +
+  "the to-get entry? Ask, and emit no action line at all.\n" +
+  "- Every deletion is SHOWN TO THE USER to confirm before anything is removed, even with automatic " +
+  'saving on — so describe it as still to come ("I\'ll delete the mint — confirm below"), never as ' +
+  "already done.\n" +
   "RULES:\n" +
   "- NEVER CLAIM MORE THAN YOU DID: your visible text may only describe changes you actually " +
   'emitted an action line for, into modules that actually exist. Never say you "logged the ' +
@@ -1445,15 +1467,19 @@ async function buildChatVisionPrompt(caption, history) {
     "EVERY OTHER ACTION IS ALSO AVAILABLE HERE — the user's message may ask for something the " +
     "picture merely accompanies (\"remind me to repot this\", \"add neem oil to my shopping list\"). " +
     "The complete set of keywords, all taking the same JSON shapes as in normal chat:\n" +
-    "  plants   — ADD_PLANT, UPDATE_PLANT\n" +
+    "  plants   — ADD_PLANT, UPDATE_PLANT, REMOVE_PLANT\n" +
     "  supplies — ADD_TOOL, UPDATE_TOOL, REMOVE_TOOL\n" +
-    "  routines — ADD_ROUTINE, UPDATE_ROUTINE, COMPLETE_ROUTINE\n" +
+    "  routines — ADD_ROUTINE, UPDATE_ROUTINE, COMPLETE_ROUTINE, REMOVE_ROUTINE\n" +
     "  to-dos   — ADD_TODO, UPDATE_TODO, COMPLETE_TODO, REMOVE_TODO\n" +
     "  shopping — ADD_TOGET, UPDATE_TOGET, REMOVE_TOGET\n" +
     "  photos   — ATTACH_PHOTO, SET_COVER\n" +
-    "That is all seventeen; there are no others. Serve the WHOLE message: if it asks for a change " +
+    "That is all nineteen; there are no others. Serve the WHOLE message: if it asks for a change " +
     "the picture is only context for, emit that action line too rather than answering about the " +
     "photo alone.\n" +
+    // A photo is the LAST place a delete should come from — the user sent a
+    // picture of a thing, which is evidence they still have it.
+    "REMOVE_* takes {\"id\": <id>} and is only for an explicit \"delete this\" in their message; a " +
+    "photo alone never means delete, and every deletion is shown to the user to confirm first.\n" +
     "IDS: use ONLY ids that literally appear in the lists above. Never invent or guess a number — " +
     "the app discards an action aimed at an id that doesn't exist, so it would save nothing while " +
     "you told the user it was done.\n" +
@@ -1479,12 +1505,14 @@ async function buildChatVisionPrompt(caption, history) {
 const ACTION_TYPE_MAP = {
   ADD_PLANT: "add",
   UPDATE_PLANT: "update",
+  REMOVE_PLANT: "remove_plant",
   ADD_TOOL: "add_tool",
   UPDATE_TOOL: "update_tool",
   REMOVE_TOOL: "remove_tool",
   ADD_ROUTINE: "add_routine",
   UPDATE_ROUTINE: "update_routine",
   COMPLETE_ROUTINE: "complete_routine",
+  REMOVE_ROUTINE: "remove_routine",
   ATTACH_PHOTO: "attach_photo",
   SET_COVER: "set_cover",
   ADD_TOGET: "add_toget",
@@ -1495,12 +1523,36 @@ const ACTION_TYPE_MAP = {
   COMPLETE_TODO: "complete_todo",
   REMOVE_TODO: "remove_todo",
 };
+
+// A DESTRUCTIVE action is one that destroys a record the user cannot get back.
+// Written as a RULE (the "remove_" prefix) rather than a hand-kept list, so the
+// next REMOVE_* verb someone adds to the map above is destructive from the
+// moment it exists instead of from the moment someone remembers to update this
+// line — the set is the readable index of what that rule currently covers, and
+// the hook for any future destructive verb that isn't named remove_*.
+// Everything that gates deletion behind a confirmation asks THIS function:
+// handleAiActions (never auto-applies one) and PendingActionsBanner (renders it
+// as dangerous, keeps it out of "Apply all").
+const DESTRUCTIVE_ACTION_TYPES = new Set([
+  "remove_plant",
+  "remove_tool",
+  "remove_routine",
+  "remove_todo",
+  "remove_toget",
+]);
+
+function isDestructiveAction(type) {
+  const t = String(type == null ? "" : type);
+  return t.indexOf("remove_") === 0 || DESTRUCTIVE_ACTION_TYPES.has(t);
+}
+
 // NOTE: the TOGET alternatives come BEFORE the TODO ones — every keyword here
 // is a complete token so neither can swallow the other, but keeping the longer
-// "ADD_TOGET"/"UPDATE_TOGET" first makes that independent of the engine's
-// leftmost-alternative rule (guarded by a test in run_app2.js).
+// "ADD_TOGET"/"UPDATE_TOGET"/"REMOVE_TOGET" first makes that independent of the
+// engine's leftmost-alternative rule (guarded by a test in run_app2.js, and by
+// the REMOVE_TOGET/REMOVE_TODO twin of it).
 const ACTION_START_RE =
-  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|ATTACH_PHOTO|SET_COVER|ADD_TOGET|UPDATE_TOGET|REMOVE_TOGET|ADD_TODO|UPDATE_TODO|COMPLETE_TODO|REMOVE_TODO)\**[ \t]*:[ \t\n]*\{/g;
+  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|REMOVE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|REMOVE_ROUTINE|ATTACH_PHOTO|SET_COVER|ADD_TOGET|UPDATE_TOGET|REMOVE_TOGET|ADD_TODO|UPDATE_TODO|COMPLETE_TODO|REMOVE_TODO)\**[ \t]*:[ \t\n]*\{/g;
 
 // Hidden action lines for modules this app does NOT have — "ADD_BED",
 // "LOG_HARVEST", "SET_REMINDER", "ADD_GREENHOUSE". ACTION_START_RE already
@@ -1829,6 +1881,35 @@ async function applyToolUpdate(tool, fields) {
 
 async function applyToolRemove(tool) {
   await deleteTool(tool.id);
+}
+
+// Routines pointing at a plant. Number() on both sides because a plantId can
+// arrive from the model as a string, while the plant's own id is always a
+// number from IndexedDB — a === here would silently report "no linked
+// routines" and leave real dangling references behind.
+function routinesLinkedToPlant(routines, plantId) {
+  return (routines || []).filter((r) => r.plantId != null && Number(r.plantId) === Number(plantId));
+}
+
+// Deleting a plant, and the one consequence it has: routines can carry a
+// plantId, and a routine whose plant is gone would keep claiming "linked to
+// plant id:7" in the AI snapshot while completeRoutine() silently did nothing
+// (it looks the plant up and returns early when it can't find it).
+//
+// DECISION — ORPHAN, DON'T CASCADE. The routine is the user's own recurring
+// task ("Water the balcony pot every 3 days"), created and worth keeping on its
+// own; deleting it as a side-effect would destroy a second record the user
+// never mentioned, which is exactly the surprise this whole confirm-first
+// feature exists to prevent. So the link is cleared (plantId → null, and
+// careAction with it, since a care action means nothing without a plant) and
+// the routine survives, visible and editable in Routines. describeAction says
+// how many routines this will touch BEFORE the user confirms.
+async function applyPlantRemove(plant) {
+  const linked = routinesLinkedToPlant(await getAllRoutines(), plant.id);
+  for (const r of linked) {
+    await updateRoutine({ ...r, plantId: null, careAction: "" });
+  }
+  await deletePlant(plant.id);
 }
 
 // Copies a photo the user sent in chat into a plant's history/gallery.
@@ -2189,6 +2270,17 @@ async function resolveAction(action, ctx) {
       const plant = await resolvePlantTarget(action);
       return plant ? { type: "update_plant", plant, fields: action.fields || {} } : null;
     }
+    case "remove_plant": {
+      const plant = await resolvePlantTarget(action);
+      if (!plant) return null;
+      // The linked routines are counted HERE, at resolve time, so the
+      // confirmation the user is about to read can say "also unlinks 2
+      // routines" — a consequence discovered after the tap is not a
+      // confirmation. applyPlantRemove re-reads them before writing, so the
+      // actual unlinking is never done off a stale list.
+      const linkedRoutines = routinesLinkedToPlant(await getAllRoutines(), plant.id);
+      return { type: "remove_plant", plant, linkedRoutines };
+    }
     case "update_tool": {
       const tool = await resolveToolTarget(action);
       return tool ? { type: "update_tool", tool, fields: action.fields || {} } : null;
@@ -2205,6 +2297,10 @@ async function resolveAction(action, ctx) {
       const routine = await resolveRoutineTarget(action);
       return routine ? { type: "complete_routine", routine } : null;
     }
+    case "remove_routine": {
+      const routine = await resolveRoutineTarget(action);
+      return routine ? { type: "remove_routine", routine } : null;
+    }
     default:
       return null;
   }
@@ -2219,6 +2315,11 @@ function describeAction(a) {
   // dropped — the user reads it here, in the same "applied" list as everything
   // else, so nothing about their data changes (or fails to change) unseen.
   const dup = a.dedupNote ? ` (${a.dedupNote})` : "";
+  // Every REMOVE_* description below says DELETE and names what goes with the
+  // record, because this same string is what the user reads in the confirm
+  // banner before tapping — see PendingActionsBanner, which adds the "can't be
+  // undone" warning around it. "Remove X" was accurate and far too quiet for
+  // the only irreversible thing in the app.
   switch (a.type) {
     case "noop_duplicate":
       return `Kept "${a.name}" as it is — already in your ${a.where}, and nothing new to save (not added twice)`;
@@ -2226,18 +2327,33 @@ function describeAction(a) {
       return `Add plant "${a.fields.name || "New plant"}"${dup}`;
     case "update_plant":
       return `Update "${a.plant.name}"${dup}: ${fieldsText(a.fields)}`;
+    case "remove_plant": {
+      const history = (a.plant.photoHistory || []).length;
+      const carries = history
+        ? ` and its ${history} history entr${history === 1 ? "y" : "ies"} (photos and care log)`
+        : "";
+      const linked = a.linkedRoutines || [];
+      const also = linked.length
+        ? ` — this also unlinks ${linked.length} routine${linked.length === 1 ? "" : "s"} (` +
+          linked.map((r) => `"${r.task}"`).join(", ") +
+          `); ${linked.length === 1 ? "the routine itself is" : "the routines themselves are"} kept`
+        : "";
+      return `Delete the plant "${a.plant.name}"${carries}${also}`;
+    }
     case "add_tool":
       return `Add "${a.fields.name || "New item"}" (x${a.fields.quantity || 1}) to inventory${dup}`;
     case "update_tool":
       return `Update "${a.tool.name}"${dup}: ${fieldsText(a.fields)}`;
     case "remove_tool":
-      return `Remove "${a.tool.name}" from inventory`;
+      return `Delete "${a.tool.name}" from your inventory`;
     case "add_routine":
       return `Add routine "${a.fields.task || "New routine"}" (every ${a.fields.intervalDays || 1}d)${dup}`;
     case "update_routine":
       return `Update routine "${a.routine.task}"${dup}: ${fieldsText(a.fields)}`;
     case "complete_routine":
       return `Mark routine "${a.routine.task}" done`;
+    case "remove_routine":
+      return `Delete the routine "${a.routine.task}" (every ${a.routine.intervalDays}d) and its schedule`;
     case "attach_photo":
       return `Add the chat photo to "${a.plant.name}"'s gallery`;
     case "set_cover":
@@ -2249,7 +2365,7 @@ function describeAction(a) {
         ? `Check off "${a.item.name}" on the to-get list`
         : `Update to-get "${a.item.name}"${dup}: ${fieldsText(a.fields)}`;
     case "remove_toget":
-      return `Remove "${a.item.name}" from the to-get list`;
+      return `Delete "${a.item.name}" from the to-get list`;
     case "add_todo":
       return `Add to-do "${a.fields.text || "New task"}"${a.fields.dueDate ? ` (due ${a.fields.dueDate})` : ""}${dup}`;
     case "update_todo":
@@ -2257,7 +2373,7 @@ function describeAction(a) {
     case "complete_todo":
       return `Tick off to-do "${a.todo.text}"`;
     case "remove_todo":
-      return `Remove to-do "${a.todo.text}"`;
+      return `Delete the to-do "${a.todo.text}"`;
     default:
       return "Unknown change";
   }
@@ -2283,6 +2399,8 @@ async function runResolvedAction(a) {
       return applyPlantAdd(a.fields);
     case "update_plant":
       return applyPlantUpdate(a.plant, a.fields);
+    case "remove_plant":
+      return applyPlantRemove(a.plant);
     case "add_tool":
       return applyToolAdd(a.fields);
     case "update_tool":
@@ -2295,6 +2413,8 @@ async function runResolvedAction(a) {
       return applyRoutineUpdate(a.routine, a.fields);
     case "complete_routine":
       return completeRoutine(a.routine);
+    case "remove_routine":
+      return deleteRoutine(a.routine.id);
     case "attach_photo":
       return applyAttachPhoto(a.plant, a.photoMsg);
     case "set_cover":
@@ -2378,9 +2498,9 @@ function sanitizeActionFields(type, fields) {
 
 // What the user's data calls this kind of thing, for skip messages.
 const ACTION_SKIP_LABEL = {
-  add: "plant", update: "plant",
+  add: "plant", update: "plant", remove_plant: "plant",
   add_tool: "inventory item", update_tool: "inventory item", remove_tool: "inventory item",
-  add_routine: "routine", update_routine: "routine", complete_routine: "routine",
+  add_routine: "routine", update_routine: "routine", complete_routine: "routine", remove_routine: "routine",
   add_todo: "to-do", update_todo: "to-do", complete_todo: "to-do", remove_todo: "to-do",
   add_toget: "to-get item", update_toget: "to-get item", remove_toget: "to-get item",
   attach_photo: "plant photo", set_cover: "cover photo",
@@ -2408,6 +2528,11 @@ function describeSkippedAction(action, why) {
 // the user to confirm. Pass setPendingActions=null where there's no confirm
 // UI — confirm mode then skips writes entirely.
 // ctx: { chatId } — lets attach_photo find photos in the current thread.
+//
+// ONE EXCEPTION TO THE WRITE MODE: a DESTRUCTIVE action (isDestructiveAction —
+// every REMOVE_*) is ALWAYS queued for an explicit confirmation, including in
+// "auto" mode, and is never applied here. With no queue to put it in it is
+// dropped and reported in `skipped`. See the split below for why.
 //
 // Returns { applied: [description…], queued: n, skipped: [reason…] } so the
 // caller can show the user visible proof of what was ACTUALLY saved (not just
@@ -2466,21 +2591,50 @@ async function handleAiActions(actions, setPendingActions, ctx = {}) {
     );
   }
   if (!resolved.length) return result;
-  if (confirmMode) {
+
+  // ---- the destructive split (user: "with confirmation of course") ----
+  //
+  // The write mode is the user's answer to "how much tapping should an ADD or
+  // an UPDATE cost me?" — it is NOT permission to destroy a record without
+  // being asked. An add is visible and reversible (delete it); an update leaves
+  // a log entry; a DELETE takes a plant's whole photo history with it and
+  // nothing in this app can bring it back. So deletions leave the write-mode
+  // branch entirely and always go to the confirm queue, "auto" or not.
+  // Non-destructive actions follow exactly the logic they always did.
+  const toQueue = confirmMode ? resolved : resolved.filter((r) => isDestructiveAction(r.type));
+  const toApply = confirmMode ? [] : resolved.filter((r) => !isDestructiveAction(r.type));
+
+  if (toQueue.length) {
     if (setPendingActions) {
       setPendingActions((prev) => {
         // Mirrored into queuedActionNotes inside the updater so the AI's
         // "NOT SAVED YET" list always matches the banner the user is looking
         // at — nothing here is written to the database yet.
-        const next = [...(prev || []), ...resolved];
+        const next = [...(prev || []), ...toQueue];
         setQueuedActions(next);
         return next;
       });
-      result.queued = resolved.length;
+      result.queued = toQueue.length;
+    } else {
+      // NO CONFIRM UI ON THIS PATH (setPendingActions === null — the contract
+      // for callers with nowhere to render a banner). "Nowhere to ask" must
+      // never resolve to "do it anyway", so the deletion is dropped — and said
+      // out loud, because a silently dropped delete plus a model cheerfully
+      // reporting "removed it!" is the one failure the user can't see.
+      // Non-destructive actions keep the old confirm-mode behaviour (dropped
+      // quietly); only deletions are reported here.
+      for (const r of toQueue) {
+        if (!isDestructiveAction(r.type)) continue;
+        result.skipped.push(
+          `Sprout wanted to ${describeAction(r).replace(/^Delete /, "delete ")} — every deletion ` +
+            "needs your confirmation and there's no way to ask you here. Nothing was deleted; " +
+            "ask again in the chat to confirm it there."
+        );
+      }
     }
-    return result;
   }
-  for (const r of resolved) {
+
+  for (const r of toApply) {
     await applyResolvedAction(r);
     result.applied.push(describeAction(r));
   }
