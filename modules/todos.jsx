@@ -111,24 +111,28 @@ function TodosView({ onNavigate, renderHeader }) {
     setNewText("");
     setNewDue("");
     refresh();
+    if (typeof schedulePushSync === "function") schedulePushSync(); // due dates moved — refresh the server's alarm schedule
   }
 
   async function toggle(t) {
     const done = !t.done;
     await updateTodo({ ...t, done, completedAt: done ? Date.now() : null });
     refresh();
+    if (typeof schedulePushSync === "function") schedulePushSync(); // due dates moved — refresh the server's alarm schedule
   }
 
   async function saveEdit(fields) {
     await updateTodo({ ...editTarget, ...fields });
     setEditTarget(null);
     refresh();
+    if (typeof schedulePushSync === "function") schedulePushSync(); // due dates moved — refresh the server's alarm schedule
   }
 
   async function remove() {
     await deleteTodo(deleteTarget.id);
     setDeleteTarget(null);
     refresh();
+    if (typeof schedulePushSync === "function") schedulePushSync(); // due dates moved — refresh the server's alarm schedule
   }
 
   // Only the completed ones — clearAllTodos() (Settings) is the nuclear option.
@@ -136,6 +140,7 @@ function TodosView({ onNavigate, renderHeader }) {
     for (const t of todos.filter((x) => x.done)) await deleteTodo(t.id);
     setConfirmClearDone(false);
     refresh();
+    if (typeof schedulePushSync === "function") schedulePushSync(); // due dates moved — refresh the server's alarm schedule
   }
 
   const clearDoneButton =

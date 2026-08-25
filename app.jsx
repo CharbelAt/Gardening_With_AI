@@ -45,10 +45,99 @@ function App() {
   const [contextPeek, setContextPeek] = useState(null); // { summary, revision } from the refresh button
   const [showSearch, setShowSearch] = useState(false); // global search overlay (header magnifier)
 
+  // ---------- Android back button ----------
+  // Installed as a PWA there is no browser chrome, so the hardware/gesture Back
+  // is the ONLY back affordance — and with a single history entry Android takes
+  // it as "leave the app". Closing a modal or returning to the previous tab used
+  // to quit outright, losing whatever was on screen.
+  //
+  // The fix is a depth counter mirrored into history.pushState: every layer the
+  // user opens (an overlay, or moving off the landing tab) pushes one entry, and
+  // popstate unwinds exactly one layer instead of exiting. Only a Back pressed
+  // at depth 0 — landing tab, nothing open — falls through and closes the app,
+  // which is what a user actually expects there.
+  const LANDING_VIEW = localStorage.getItem(LS_LANDING_VIEW) === "today" ? "today" : "chat";
+  // Ordered outermost-last: popstate closes the FIRST match, i.e. the topmost
+  // thing on screen. Detail pages inside a view own their own back arrow and
+  // are deliberately not layers here.
+  const overlays = [
+    [contextPeek, () => setContextPeek(null)],
+    [deleteTarget, () => setDeleteTarget(null)],
+    [renameTarget, () => setRenameTarget(null)],
+    [showHelp, () => setShowHelp(false)],
+    [showGuide, () => setShowGuide(false)],
+    [showSearch, () => setShowSearch(false)],
+    [showChatList, () => setShowChatList(false)],
+    [showSettings, () => setShowSettings(false)],
+  ];
+  const openOverlays = overlays.filter(([isOpen]) => isOpen);
+  const depth = openOverlays.length + (view === LANDING_VIEW ? 0 : 1);
+  const depthRef = useRef(0);
+  const closeTopRef = useRef(null);
+  // history.back() is asynchronous and fires popstate just like a real Back
+  // press. Without this counter, closing a modal with its own X button would
+  // unwind the history entry AND have the popstate handler close a second
+  // layer underneath it — one tap, two things closed. Each programmatic back
+  // marks one popstate to be ignored.
+  const suppressPopRef = useRef(0);
+  // Read by the popstate handler so it always acts on the CURRENT screen without
+  // the listener needing to be torn down and re-added on every state change.
+  closeTopRef.current = () => {
+    if (openOverlays.length) {
+      openOverlays[0][1]();
+      return true;
+    }
+    if (view !== LANDING_VIEW) {
+      navigate(LANDING_VIEW);
+      return true;
+    }
+    return false; // depth 0 — let Android close the app
+  };
+
+  useEffect(() => {
+    const prev = depthRef.current;
+    depthRef.current = depth;
+    // Only ever PUSH on the way down. Unwinding is done by popstate itself (or
+    // by history.back below), so closing a modal with its own X button stays in
+    // sync with the history stack instead of leaving a stale entry behind.
+    if (depth > prev) {
+      window.history.pushState({ gcDepth: depth }, "");
+    } else if (depth < prev) {
+      // Closed from inside the UI rather than via Back: drop the matching
+      // entries so the next Back press doesn't just replay a no-op. Each of
+      // these will fire a popstate that must NOT be treated as a user Back.
+      const n = prev - depth;
+      suppressPopRef.current += n;
+      for (let i = 0; i < n; i++) window.history.back();
+    }
+  }, [depth]);
+
+  useEffect(() => {
+    function onPop() {
+      // Our own history.back() bookkeeping, not a user Back press.
+      if (suppressPopRef.current > 0) {
+        suppressPopRef.current -= 1;
+        return;
+      }
+      const handled = closeTopRef.current && closeTopRef.current();
+      if (handled) {
+        // Re-arm: we consumed this entry to close a layer, so push a fresh one
+        // to stay one deep for the NEXT Back press.
+        window.history.pushState({ gcDepth: depthRef.current }, "");
+      }
+      // Not handled → nothing pushed → the browser/OS takes the Back, which at
+      // depth 0 means leaving the app. That is the intended escape hatch.
+    }
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
   useEffect(() => {
     localStorage.setItem(LS_THEME, theme);
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", theme === "dark" ? "#101510" : "#2e6b34");
+    // From the registry, not a ternary: a new theme in THEMES (helpers.jsx) must
+    // colour the Android status bar without anyone remembering to edit this line.
+    if (meta) meta.setAttribute("content", themeById(theme).themeColor);
   }, [theme]);
 
   // Keep the nav badges fresh (due routines + open to-get items + to-dos that
@@ -199,8 +288,11 @@ function App() {
 
   const activeChat = chats.find((c) => c.id === activeChatId);
 
+  // themeClassName emits "theme-<id>" plus "dark" for any dark palette. That
+  // second class is what keeps the `.dark .foo` STRUCTURAL rules in styles.css
+  // alive — see the note over THEMES in helpers.jsx before trimming it.
   return (
-    <div className={`app ${theme === "dark" ? "dark" : ""}`}>
+    <div className={`app ${themeClassName(theme)}`}>
       <header className="app-header">
         {/* Two jobs left in the header: switch conversations (chat only) on the
             left, search and settings on the right. Today became a tab, and the

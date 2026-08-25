@@ -56,6 +56,7 @@ function AddRoutineModal({ onClose, onAdded }) {
       tags: normTags(tags),
     });
     onAdded();
+    if (typeof schedulePushSync === "function") schedulePushSync(); // due dates moved — refresh the server's alarm schedule
   }
 
   return (
@@ -125,6 +126,7 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
     });
     setEditing(false);
     onChanged();
+    if (typeof schedulePushSync === "function") schedulePushSync(); // due dates moved — refresh the server's alarm schedule
   }
 
   async function remove() {
@@ -132,6 +134,7 @@ function RoutineDetail({ routine, onBack, onChanged, onNavigate }) {
     setConfirmDelete(false);
     onBack();
     onChanged();
+    if (typeof schedulePushSync === "function") schedulePushSync(); // due dates moved — refresh the server's alarm schedule
   }
 
   return (

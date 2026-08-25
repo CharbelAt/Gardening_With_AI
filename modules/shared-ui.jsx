@@ -349,9 +349,17 @@ function SettingsModal({ onClose, onCleared, onShowHelp, onShowGuide, onShowCont
         </label>
         <label>
           Theme
+          {/* Still a <select>, deliberately. A swatch grid would preview the
+              colours, but this row sits in a column of three other <select>s in
+              the same modal, and the native picker brings its own keyboard and
+              screen-reader behaviour, its own scrolling, and a fifth theme for
+              free. The labels carry the light/dark family instead of a chip, and
+              switching is instant and reversible, so the preview is the app
+              itself. Options come from THEMES (helpers.jsx) — never hand-listed. */}
           <select value={theme} onChange={(e) => onThemeChange(e.target.value)}>
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
+            {THEMES.map((t) => (
+              <option key={t.id} value={t.id}>{t.label}</option>
+            ))}
           </select>
         </label>
         <label>

@@ -1,7 +1,10 @@
 /* ============================================================
    Garden Companion — design tokens
-   Two themes (light default, .dark override), one spacing/type/radius
-   scale, everything downstream uses the variables only.
+   Four named themes, registered in THEMES (modules/helpers.jsx): the :root
+   block below IS Meadow (light), .dark turns it into Forest, and the .theme-*
+   blocks after .dark override the colour tokens for the other two. One
+   spacing/type/radius scale for all of them, and everything downstream uses
+   the variables only.
 
    Layout follows Apple's Human Interface Guidelines where they apply to a
    one-handed phone app: a Dynamic-Type-shaped type ramp, a 4pt spacing
@@ -161,6 +164,134 @@
   --shadow-3: 0 -1px 24px rgba(0, 0, 0, 0.5), 0 12px 40px rgba(0, 0, 0, 0.6);
 }
 
+/* ============================================================
+   The other two themes (ids/labels live in THEMES, modules/helpers.jsx)
+
+   TWO THINGS HOLD THIS TOGETHER, and both are load-bearing:
+
+   1. A dark theme's element carries BOTH classes — "app dark theme-midnight".
+      .dark is not merely a bundle of token values: a few components need a
+      STRUCTURAL flip on a dark background (which of the two surfaces reads as
+      "raised" in .segmented, the accent .btn-ghost / .bottom-nav-item.active /
+      .gc-readmore / .today-more switch to), and those are written as
+      `.dark .foo` rules scattered further down this file. A dark theme that
+      dropped the class would still look roughly right and would quietly break
+      every one of them.
+   2. These blocks must stay AFTER .dark. `.dark` and `.theme-midnight` are
+      both a single class (0,1,0), so specificity ties and nothing but SOURCE
+      ORDER decides the winner — which is exactly what lets a theme override
+      the dark defaults it inherits. Moving them above .dark silently undoes
+      the whole palette.
+
+   Meadow (light) and Forest (dark) deliberately have no .theme-* block: they
+   ARE :root and :root + .dark, byte for byte, so there is nothing to override
+   and no second copy that can drift.
+
+   3. Each block below declares the SAME 32 colour tokens as .dark — including
+      the few where the value happens to equal what it would have inherited.
+      That uniformity is the point: "does this palette define everything?" is
+      then a set comparison anyone (or a script) can run, instead of a walk up
+      the cascade to work out which base a given theme would have fallen
+      through to. COLOUR ONLY — spacing, type, radii, motion and --tap are one
+      shared scale for all four themes and must never appear in a .theme-*
+      block.
+   ============================================================ */
+
+/* Terracotta — warm clay, sand and ochre, for anyone who finds the green light
+   theme cold: fired pot against dry earth rather than leaves. Danger stays a
+   COOL crimson (#a4162c) on purpose — in a palette this warm, a red-orange
+   "delete" would read as one more decorative accent. */
+.theme-terracotta {
+  --primary: #9c4a2a;
+  --primary-strong: #7e3a20;
+  --primary-soft: #aa5030;
+  --danger: #a4162c;
+  --danger-soft: #fbe9e6;
+  --warn: #7d5709;
+  --warn-bg: #fbf0d8;
+  --info: #1f6a92;
+  /* White, same as the base — but SPELLED OUT rather than inherited. Every
+     theme block below/above declares the identical set of colour tokens, which
+     is what makes "did this palette forget one?" a set comparison instead of a
+     walk up the cascade. All three fills are dark enough to carry white:
+     measured 6.13:1, 7.69:1 and 6.48:1. */
+  --on-primary: #ffffff;
+  --on-danger: #ffffff;
+  --on-warn: #ffffff;
+
+  --bg: #faf3ea;
+  --surface: #fffaf3;
+  --surface-2: #f2e4d2;
+  --text: #2b1d13;
+  --text-dim: #6a5240;
+  --text-faint: #7a6350;
+  --border: #e6d5c0;
+  --header-grad-1: #a04c28;
+  --header-grad-2: #7a3417;
+  --header-text: #fff6ee;
+  --bubble-user-1: #a85231;
+  --bubble-user-2: #8c3f22;
+  --bubble-user-text: #fff6ee;
+  --bubble-ai: #fffaf3;
+  --bubble-ai-text: #2b1d13;
+  --overlay: rgba(46, 28, 16, 0.45);
+  --nav-bg: rgba(255, 250, 243, 0.82);
+  --nav-bg-solid: #fdf5ea;
+  /* Same geometry and alphas as the base, warm-tinted: a green-grey shadow
+     on sand reads as dirt rather than depth. */
+  --shadow-1: 0 1px 2px rgba(74, 45, 24, 0.07), 0 1px 3px rgba(74, 45, 24, 0.07);
+  --shadow-2: 0 2px 6px rgba(74, 45, 24, 0.09), 0 6px 18px rgba(74, 45, 24, 0.11);
+  --shadow-3: 0 -1px 24px rgba(74, 45, 24, 0.15), 0 12px 40px rgba(74, 45, 24, 0.24);
+}
+
+/* Midnight — the cool counterpart to Forest: slate and indigo, the garden
+   after dark rather than in it. The amber --warn is kept warm so "due" still
+   reads as urgent against all this blue instead of blending into the primary.
+   Carries the `dark` class alongside this one (see point 1 above) — without it
+   the segmented control and the accent links silently revert. */
+.theme-midnight {
+  --primary: #4a63b8;
+  --primary-strong: #3a4f96;
+  --primary-soft: #94a9f0;
+  --on-primary: #f2f5ff;
+  --danger: #ef7f76;
+  --danger-soft: #351d20;
+  /* Dark ink on both light fills, for the same reason as .dark: white on a
+     pastel coral or amber never reaches AA. */
+  --on-danger: #2a0e0c;
+  --warn: #d9a94f;
+  --warn-bg: #2f2a1a;
+  --on-warn: #211803;
+  --info: #74b6ee;
+
+  --bg: #0e1220;
+  --surface: #171d2e;
+  --surface-2: #212a3f;
+  --text: #e6e9f3;
+  --text-dim: #a7b0c7;
+  --text-faint: #8b95ad;
+  --border: #2c3550;
+  --header-grad-1: #1e2748;
+  --header-grad-2: #131a33;
+  --header-text: #e6e9f3;
+  --bubble-user-1: #4a5fae;
+  --bubble-user-2: #37478a;
+  --bubble-user-text: #eff2fd;
+  --bubble-ai: #1a2133;
+  --bubble-ai-text: #e6e9f3;
+  --overlay: rgba(3, 5, 12, 0.68);
+  --nav-bg: rgba(15, 20, 34, 0.8);
+  --nav-bg-solid: #101527;
+  /* Identical to .dark's on purpose — pure black is already the deepest thing
+     that can sit under a #0e1220 surface, so there is nothing to tint towards.
+     Restated rather than inherited for the same reason as Terracotta's --on-*
+     trio above: every theme block declares the same token set, so a missing
+     colour is a diff and not a cascade puzzle. */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 -1px 24px rgba(0, 0, 0, 0.5), 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
 /* Retina and better can draw a true hairline; anything less would round a
    0.5px border away to nothing, so those keep the full pixel. */
 @media (min-resolution: 2dppx) {
@@ -198,6 +329,13 @@ body {
    default — .app covers the viewport, so this is only ever visible in the
    overscroll gutter and in the desktop frame below. */
 body:has(.app.dark) { background: #0b0f0b; }
+/* The colours are literal here because a token can't help: --bg is declared on
+   :root, the theme class sits on .app BELOW it, and custom properties only
+   inherit downwards — so var(--bg) on <body> is always the Meadow value.
+   Midnight must come after the .dark rule above: same specificity, so source
+   order is the only thing that lets it win. */
+body:has(.app.theme-midnight) { background: #070a14; }
+body:has(.app.theme-terracotta) { background: #faf3ea; }
 
 input, textarea, select {
   /* A non-selectable field breaks cursor placement / double-tap-to-select-
@@ -269,6 +407,10 @@ input, textarea, select, button { font-size: var(--fs-body); }
 @media (min-width: 700px) {
   body { background: color-mix(in srgb, var(--bg, #e6ebe2) 60%, #cbd6c4); }
   body:has(.app.dark) { background: #0b0f0b; }
+  /* Same literal-colour reason as above; the frame is a shade deeper than the
+     theme's own --bg so the phone-shaped app still reads as sitting on top. */
+  body:has(.app.theme-midnight) { background: #070a14; }
+  body:has(.app.theme-terracotta) { background: #e8dccb; }
   .app {
     max-width: 520px;
     height: calc(100vh - 32px);
@@ -927,38 +1069,9 @@ input, textarea, select, button { font-size: var(--fs-body); }
    the button box stays at the 44px minimum. */
 .icon-btn.small { font-size: 1rem; padding: var(--sp-2); min-width: var(--tap); min-height: var(--tap); }
 
-/* Photo preview / caption editor before sending */
-.photo-preview {
-  padding: var(--sp-3) var(--gutter);
-  background: var(--surface);
-  border-top: var(--hairline) solid var(--border);
-}
 
-.photo-preview img {
-  max-height: 140px;
-  border-radius: var(--r-md);
-  display: block;
-  margin-bottom: var(--sp-2);
-}
 
-.photo-preview textarea {
-  width: 100%;
-  padding: var(--sp-3);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--bg);
-  color: var(--text);
-  font-family: inherit;
-  font-size: var(--fs-body);
-  line-height: var(--lh-body);
-  resize: vertical;
-}
 
-.photo-preview-actions {
-  display: flex;
-  gap: var(--sp-2);
-  margin-top: var(--sp-2);
-}
 
 /* ---------- Tap-to-talk dictation (voice.jsx) ---------- */
 

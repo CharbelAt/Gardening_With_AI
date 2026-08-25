@@ -3,7 +3,7 @@
 // this app is actively being updated — you always want the latest app.jsx
 // over a stale cached copy. The cache is only a fallback for when there's no
 // network at all. AI calls and CDN scripts always go straight to the network.
-const CACHE = "garden-companion-v19"; // v19: guide, max context, anti-hallucination guards
+const CACHE = "garden-companion-v22"; // v22: themes (meadow, terracotta, forest, midnight)
 const SHELL = [
   "./",
   "./index.html",
@@ -42,6 +42,101 @@ self.addEventListener("activate", (event) => {
     )
   );
   self.clients.claim();
+});
+
+// ---------- Web Push ----------
+//
+// This is what makes reminders arrive when the app is CLOSED. The server holds
+// a delivery schedule uploaded by notify.jsx (rendered title/body only — it has
+// no access to the garden data, which never leaves IndexedDB on this device),
+// and pushes an already-rendered message at the right moment. So there is
+// nothing to compute here: read the payload, show it.
+const PUSH_DEFAULTS = {
+  title: "Garden Companion",
+  body: "Something in your garden needs attention.",
+  tag: "garden-due", // same tag the in-tab path uses, so a push and a local
+                     // notification about the same morning collapse into one
+                     // instead of stacking two identical rows.
+  url: "./",
+};
+
+// A push payload arrives as opaque bytes: it can be absent entirely (some
+// services send a bare "wake up" with no data), or be text that isn't JSON.
+// Neither may throw — with userVisibleOnly:true the browser punishes a push
+// that shows nothing by displaying its own "this site was updated in the
+// background" notice, which is worse than a generic message of our own.
+function readPushPayload(event) {
+  const out = { ...PUSH_DEFAULTS };
+  if (!event.data) return out;
+  let parsed = null;
+  try {
+    parsed = event.data.json();
+  } catch (_) {
+    try {
+      const text = event.data.text();
+      if (text) out.body = text;
+    } catch (_) {
+      /* unreadable payload — fall back to the defaults */
+    }
+    return out;
+  }
+  if (!parsed || typeof parsed !== "object") return out;
+  if (typeof parsed.title === "string" && parsed.title) out.title = parsed.title;
+  if (typeof parsed.body === "string" && parsed.body) out.body = parsed.body;
+  if (typeof parsed.tag === "string" && parsed.tag) out.tag = parsed.tag;
+  if (typeof parsed.url === "string" && parsed.url) out.url = parsed.url;
+  return out;
+}
+
+self.addEventListener("push", (event) => {
+  const payload = readPushPayload(event);
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      icon: "./icons/icon-192.png",
+      badge: "./icons/icon-192.png",
+      tag: payload.tag,
+      renotify: true, // same tag replaces the old row, but still buzzes: a new
+                      // day's reminder is genuine new news, not a duplicate.
+      data: { url: payload.url },
+    })
+  );
+});
+
+// Tapping a due-reminder notification should open the app, not do nothing.
+// Focus an already-open window if there is one (rather than stacking a second
+// copy), otherwise open a fresh one. A push may name a specific view via
+// data.url; anything absent or malformed falls back to the app root.
+function notificationTargetUrl(notification) {
+  const raw = (notification && notification.data && notification.data.url) || "./";
+  try {
+    return new URL(raw, self.location.href).href;
+  } catch (_) {
+    return new URL("./", self.location.href).href;
+  }
+}
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = notificationTargetUrl(event.notification);
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const client of list) {
+        if (!("focus" in client)) continue;
+        // Steer the window that's already open rather than opening a second
+        // copy. navigate() isn't universally implemented (and rejects
+        // cross-origin), so focusing is the part that must always happen.
+        if (client.url !== target && typeof client.navigate === "function") {
+          return client
+            .navigate(target)
+            .then((c) => (c && c.focus ? c.focus() : c))
+            .catch(() => client.focus());
+        }
+        return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(target);
+    })
+  );
 });
 
 self.addEventListener("fetch", (event) => {

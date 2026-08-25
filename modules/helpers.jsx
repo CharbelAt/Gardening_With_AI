@@ -9,7 +9,7 @@ const LS_API_BASE = "gc_apiBase";
 const LS_SECRET = "gc_clientSecret";
 const LS_ACTIVE_CHAT = "gc_activeChatId";
 const LS_AI_WRITE_MODE = "gc_aiWriteMode"; // 'auto' | 'confirm'
-const LS_THEME = "gc_theme"; // 'dark' | 'light'
+const LS_THEME = "gc_theme"; // a THEMES[].id (see the registry below)
 const LS_DEFAULT_LOCATION = "gc_defaultLocation";
 const LS_LANDING_VIEW = "gc_landingView"; // "chat" (default) | "today"
 
@@ -34,7 +34,30 @@ const LS_LANDING_VIEW = "gc_landingView"; // "chat" (default) | "today"
 //
 // Image messages ride along as a short "[shared photo #N]" placeholder, never
 // the data URL, so photo-heavy threads cost almost nothing here.
-const CONTEXT_TOKEN_BUDGET = 48000; // ≈192k characters of replayed history
+// WHY THIS IS 6000 AND NOT 48000 (it was 48000, and that made questions slow):
+// A 48k-token payload is too large for Groq's free tier, which answered with
+// HTTP 413 Payload Too Large on every question. Groq is the FAST provider
+// (~1-2s); disqualifying it meant every question fell through to Gemini with
+// thinking enabled, measured at 15-28 SECONDS in the live logs (and one 45s
+// timeout). So the "maximum context" setting was buying history the user
+// couldn't feel and paying for it with a 20-second wait they could.
+// 6000 tokens ≈ 24k characters ≈ 40-80 ordinary turns — still far more thread
+// than any real conversation uses, and small enough that the fast provider can
+// serve it. Raise it if you would rather have depth than speed; the cost is
+// paid on EVERY question, not just the long ones.
+// THE ARITHMETIC THAT SETS THIS NUMBER (Groq free tier, ~8000 tokens/minute,
+// reservation = prompt + max_tokens charged UP FRONT):
+//   system prompt ~4800  +  history budget 1200  +  reply reserve 2048  ≈ 8050
+// (The system prompt is the dominant cost, not the history: the action
+// formulas, the closed-set rule and the garden snapshot are ~4.8k on their own.
+// Shrinking THAT is the next real lever — a lean chat variant of
+// ACTION_CONVENTIONS — but it is a bigger change than this latency fix.)
+// That fits inside one minute, which is the whole point: it keeps the FAST
+// provider eligible. 2500 tokens is still ~10k characters ≈ 30-60 ordinary
+// turns of conversation — more thread than a gardening chat ever needs.
+// Overridable at runtime via localStorage "gc_contextBudget" if you would
+// rather trade speed back for depth.
+const CONTEXT_TOKEN_BUDGET = Number(localStorage.getItem("gc_contextBudget")) || 1200;
 const CONTEXT_MIN_MESSAGES = 12; // floor: always kept even if they blow the budget,
 // so a handful of enormous messages can never starve the window down to nothing
 const CONTEXT_MESSAGE_CAP = 400; // ceiling on message COUNT, independent of size
@@ -115,8 +138,62 @@ function getAiWriteMode() {
   return localStorage.getItem(LS_AI_WRITE_MODE) || "auto";
 }
 
+// ---------- themes ----------
+//
+// ONE source of truth for the four palettes. `id` is what lands in localStorage
+// AND what becomes the `theme-<id>` class on the root element (so it must match
+// the `.theme-<id>` blocks in styles.css); `label` is what Settings shows;
+// `dark` decides whether that element ALSO gets the plain `dark` class; and
+// `themeColor` paints the Android status bar via <meta name="theme-color">.
+//
+// WHY `dark` IS A FLAG HERE AND NOT `id === "forest"`:
+// styles.css carries a handful of `.dark .foo` rules — the segmented control,
+// .btn-ghost, .bottom-nav-item.active, .gc-readmore, .today-more — that flip
+// STRUCTURE rather than palette on a dark ground (which of the two surfaces
+// reads as "raised", which accent an inline link takes). They are not part of
+// any palette block and no token can express them. So EVERY dark theme has to
+// keep carrying the `dark` class: one that dropped it would still look roughly
+// right at a glance and would quietly break all five. Deriving the class from
+// this flag is what makes "add a dark theme" a one-line change that can't
+// forget them.
+//
+// The two original palettes are renamed only. Meadow is the old "light" and
+// Forest the old "dark", down to their status-bar colours (#2e6b34 / #101510),
+// because renaming was not allowed to move a pixel.
+const THEMES = [
+  { id: "meadow", label: "Meadow (light)", dark: false, themeColor: "#2e6b34" },
+  { id: "terracotta", label: "Terracotta (light)", dark: false, themeColor: "#a04c28" },
+  { id: "forest", label: "Forest (dark)", dark: true, themeColor: "#101510" },
+  { id: "midnight", label: "Midnight (dark)", dark: true, themeColor: "#1e2748" },
+];
+
+// The app has always opened dark for a first-time user; Forest IS that palette,
+// so the default is unchanged in effect.
+const DEFAULT_THEME_ID = "forest";
+
+// Values written by every version of the app before the theme system existed.
+// They are MIGRATED, never ignored: falling back to the default instead would
+// silently flip an existing light-theme user to dark on upgrade.
+const LEGACY_THEME_IDS = { dark: "forest", light: "meadow" };
+
+// Always returns a real theme — an unknown id (hand-edited storage, or a theme
+// dropped by a later version) resolves to the default rather than rendering
+// with no palette class at all.
+function themeById(id) {
+  return THEMES.find((t) => t.id === id) || THEMES.find((t) => t.id === DEFAULT_THEME_ID);
+}
+
 function getTheme() {
-  return localStorage.getItem(LS_THEME) || "dark";
+  const stored = localStorage.getItem(LS_THEME);
+  if (!stored) return DEFAULT_THEME_ID;
+  return themeById(LEGACY_THEME_IDS[stored] || stored).id;
+}
+
+// The palette classes for the root element, as one string. Read the `dark`
+// note above before "simplifying" this: the second class is load-bearing.
+function themeClassName(id) {
+  const t = themeById(id);
+  return `theme-${t.id}${t.dark ? " dark" : ""}`;
 }
 
 function getDefaultLocation() {
@@ -2014,6 +2091,11 @@ async function completeRoutine(routine) {
   } else if (routine.careAction === "fertilize") {
     await updatePlant(withCareLogEntry({ ...plant, lastFertilized: Date.now() }, `Fertilized (routine: ${routine.task})`, "fertilize"));
   }
+  // Completing a routine moves its next due date, which is exactly what the
+  // uploaded push schedule was built from — re-sync so the server isn't still
+  // holding an alarm for a job already done. Covers every caller of this
+  // function (Routines detail, the Today dashboard, and AI COMPLETE_ROUTINE).
+  if (typeof schedulePushSync === "function") schedulePushSync();
 }
 
 // ---------- duplicate-ADD guard ----------
@@ -2386,6 +2468,12 @@ function describeAction(a) {
 async function applyResolvedAction(a) {
   const out = await runResolvedAction(a);
   bumpContextRevision();
+  // The push schedule lives on the server and is only as fresh as the last
+  // upload, so any write that could change WHEN something falls due has to
+  // re-sync it. Debounced and a no-op when push is off (notify.jsx), so this
+  // is safe to call on every write; guarded because notify.jsx loads after
+  // helpers.jsx and a partial load must not break AI actions.
+  if (typeof schedulePushSync === "function") schedulePushSync();
   return out;
 }
 
