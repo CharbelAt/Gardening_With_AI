@@ -115,7 +115,23 @@ async function checkDueAndNotify(force) {
     return { fired: false, reason: "error" };
   }
 
-  if (items.length === 0) return { fired: false, reason: "nothing-due" };
+  // A TEST must always produce a visible notification — that is the entire
+  // point of the button. This used to bail out with "nothing-due" even under
+  // force, so pressing "Send a test notification" on a garden with nothing
+  // overdue did nothing at all, which reads as a broken feature (it was
+  // reported as exactly that). You press it precisely WHEN nothing is due, to
+  // check delivery works. It is labelled as a test so it can never be mistaken
+  // for a real reminder.
+  if (items.length === 0) {
+    if (!force) return { fired: false, reason: "nothing-due" };
+    const ok = await showDueNotification("Garden Companion — test", {
+      body: "Notifications are working. Nothing is actually due right now.",
+      icon: "./icons/icon-192.png",
+      badge: "./icons/icon-192.png",
+      tag: "garden-test", // its own tag: must not replace or be replaced by a real reminder
+    });
+    return ok ? { fired: true, reason: "test-sent" } : { fired: false, reason: "error" };
+  }
 
   const today = todayISO(); // helpers.jsx — device-local calendar day, not UTC
   // Signature, not just the count: a different SET of the same size (one
@@ -475,24 +491,56 @@ function buildPushReminders(routines, todos, options) {
     });
   });
 
+  // A to-do carrying a clock time ("remind me at 14:30", "in 5 minutes") is its
+  // OWN event and deliberately skips the bucket: merging it into the morning
+  // digest would deliver it at 08:00 with two unrelated chores, which is not
+  // what "at 14:30" means. Everything without a time keeps snapping to the
+  // configured hour and keeps grouping, exactly as before.
+  const timed = [];
+
   (todos || []).forEach((todo, index) => {
     if (!todo || todo.done) return; // completed to-dos are not news
     if (!todo.dueDate) return; // an undated to-do has no moment to fire at
+    const key = `t:${todo.id != null ? todo.id : index}`;
+    // todoDueAt (helpers.jsx) returns an exact local instant ONLY when the
+    // to-do has both a date and a usable time — one implementation of "when is
+    // this due", shared with the list UI so they can never disagree.
+    const exact = typeof todoDueAt === "function" ? todoDueAt(todo) : null;
+    if (exact != null) {
+      if (exact > now) {
+        timed.push({
+          id: `timed-${todo.id != null ? todo.id : index}-${exact}`,
+          at: exact,
+          title: todo.text || "To-do",
+          body: "Due now.",
+        });
+      } else {
+        // Already past: fold it into the next morning slot rather than dropping
+        // it — the server rejects anything with `at` in the past, so a missed
+        // timed reminder would otherwise vanish silently.
+        add(soonest, todo.text || "To-do", key);
+      }
+      return;
+    }
     const at = localEpochForDate(todo.dueDate, hour);
     if (at == null) return;
     let slot = at <= now ? soonest : at; // overdue → next reminder
-    add(slot, todo.text || "To-do", `t:${todo.id != null ? todo.id : index}`);
+    add(slot, todo.text || "To-do", key);
   });
 
-  return Array.from(bySlot.entries())
-    .sort((a, b) => a[0] - b[0])
-    .slice(0, PUSH_MAX_REMINDERS)
-    .map(([at, bucket]) => {
-      // Several things due the same morning are ONE notification, worded
-      // exactly like the in-tab one.
-      const { title, body } = formatDueSummary(bucket.names);
-      return { id: `due-${at}`, at, title, body };
-    });
+  const grouped = Array.from(bySlot.entries()).map(([at, bucket]) => {
+    // Several things due the same morning are ONE notification, worded
+    // exactly like the in-tab one.
+    const { title, body } = formatDueSummary(bucket.names);
+    return { id: `due-${at}`, at, title, body };
+  });
+
+  // Cap AFTER merging both kinds, so a timed reminder can't be crowded out by
+  // a long tail of distant morning digests.
+  return grouped
+    .concat(timed)
+    .sort((a, b) => a.at - b.at)
+    .slice(0, PUSH_MAX_REMINDERS);
 }
 
 // Uploads the current schedule, replacing whatever the server held for this
@@ -589,6 +637,8 @@ function startNotifyTimer() {
 
 const NOTIFY_TEST_MESSAGES = {
   sent: "Sent — check your notifications.",
+  // Reached when the test fired with nothing actually due (see checkDueAndNotify).
+  "test-sent": "Sent — check your notifications. (Nothing is really due; that was a test.)",
   "nothing-due": "Nothing's due right now, so there was nothing to notify about — add an overdue routine or to-do, then try again.",
   "no-permission": "Notifications aren't allowed for this site.",
   unsupported: "This browser doesn't support notifications.",

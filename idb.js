@@ -253,15 +253,31 @@ function clearAllShoppingItems() {
 // ---------- to-do list (one-off garden tasks) ----------
 
 // todo: { text, done: boolean, completedAt: timestamp|null,
-//         dueDate: "YYYY-MM-DD"|"" (optional), notes (optional), createdAt }
+//         dueDate: "YYYY-MM-DD"|"" (optional), dueTime: "HH:MM"|"" (optional,
+//         24h, DEVICE-local), notes (optional), createdAt }
 // Distinct from routines (which recur on an interval) and from the to-get
 // shopping list (things to BUY): a to-do is a single task to DO once.
+//
+// dueTime IS THE REMINDER CLOCK TIME, and it is why NO DB_VERSION BUMP was
+// needed for it: an IndexedDB object store is schemaless, so every to-do
+// written before this field existed simply has no `dueTime` key. Every reader
+// treats a missing/blank one as "no time" and keeps the old day-granularity
+// behaviour (see todoDueDelta/todoDueAt in modules/helpers.jsx), which is what
+// makes adding it a pure addition rather than a migration.
+// It only MEANS anything alongside a dueDate — a time with no date has no
+// instant to fire at, so readers ignore it (they all require dueDate first).
 function addTodo(todo) {
   return addRecord(STORE_TODOS, {
     text: todo.text || "",
     done: false,
     completedAt: null,
     dueDate: todo.dueDate || "",
+    // Normalised at the storage boundary so no create path (the UI's time
+    // input, an AI ADD_TODO, a future caller) can put "25:99" or "banana" in
+    // the database. helpers.jsx loads immediately after this file and this
+    // body only ever runs long after that, but the typeof guard keeps a
+    // partial page load from breaking to-do creation outright.
+    dueTime: typeof normalizeDueTime === "function" ? normalizeDueTime(todo.dueTime) : todo.dueTime || "",
     notes: todo.notes || "",
     createdAt: Date.now(),
   });

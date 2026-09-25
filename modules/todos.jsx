@@ -10,22 +10,38 @@
 
 // `todayISO()` and `todoDueDelta()` (0 = today, negative = overdue) live in
 // helpers.jsx — the AI's knowledge context needs them too and that file loads
-// first.
-function todoDueLabel(dueDate) {
+// first. So do `normalizeDueTime()` and `todoDueAt()`, the only two places that
+// know how to read the optional "HH:MM" dueTime.
+//
+// `dueTime` is optional and the SECOND argument, so every existing call site
+// (today.jsx passes the date alone) keeps rendering exactly what it always did.
+function todoDueLabel(dueDate, dueTime) {
   const delta = todoDueDelta(dueDate);
   if (delta === null) return "";
-  if (delta === 0) return "today";
+  const time = normalizeDueTime(dueTime); // "" for absent or unusable
+  const at = time ? ` ${time}` : "";
+  if (delta === 0) return `today${at}`;
+  // No time on an overdue label: this branch only fires for a PREVIOUS
+  // calendar day, where "overdue 3 d 14:30" would be noise, not information.
   if (delta < 0) return `overdue ${-delta} d`;
-  if (delta === 1) return "tomorrow";
-  return dueDate;
+  if (delta === 1) return `tomorrow${at}`;
+  return dueDate + at;
 }
 
 // The nav badge counts only what actually needs attention today: open items
 // that are overdue or due today (not every open to-do).
+//
+// A to-do with a TIME is not urgent until that time arrives — a 14:30 reminder
+// shouldn't be shouting at 09:00 — but everything else is judged exactly as
+// before, by the calendar day alone. Dateless: never urgent; an earlier day:
+// always urgent whatever the clock says; today with no time: urgent all day.
 function isTodoUrgent(todo) {
   if (!todo || todo.done) return false;
   const delta = todoDueDelta(todo.dueDate);
-  return delta !== null && delta <= 0;
+  if (delta === null || delta > 0) return false;
+  if (delta < 0) return true;
+  const at = todoDueAt(todo); // null unless BOTH dueDate and a usable dueTime
+  return at === null ? true : Date.now() >= at;
 }
 
 // Open items first (soonest due first, undated last, then id); done items
@@ -48,8 +64,19 @@ function sortTodos(list) {
 function EditTodoModal({ todo, onSave, onCancel }) {
   const [text, setText] = useState(todo.text || "");
   const [dueDate, setDueDate] = useState(todo.dueDate || "");
+  const [dueTime, setDueTime] = useState(todo.dueTime || "");
   const [notes, setNotes] = useState(todo.notes || "");
   useEscapeKey(onCancel);
+
+  const save = () => onSave({ text: text.trim(), dueDate, dueTime, notes });
+
+  // Clearing the date clears the time with it: a time with no date has no
+  // moment to fire at, so leaving one behind would store a value that does
+  // nothing now and quietly comes back to life if a date is added later.
+  function changeDate(value) {
+    setDueDate(value);
+    if (!value) setDueTime("");
+  }
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
@@ -61,19 +88,23 @@ function EditTodoModal({ todo, onSave, onCancel }) {
             autoFocus
             value={text}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && text.trim() && onSave({ text: text.trim(), dueDate, notes })}
+            onKeyDown={(e) => e.key === "Enter" && text.trim() && save()}
           />
         </label>
         <label>
           Due date (optional)
-          <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          <input type="date" value={dueDate} onChange={(e) => changeDate(e.target.value)} />
+        </label>
+        <label>
+          Time (optional — sends a reminder at that moment)
+          <input type="time" value={dueTime} disabled={!dueDate} onChange={(e) => setDueTime(e.target.value)} />
         </label>
         <label>
           Notes
           <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
         </label>
         <div className="modal-actions">
-          <button className="btn" disabled={!text.trim()} onClick={() => onSave({ text: text.trim(), dueDate, notes })}>
+          <button className="btn" disabled={!text.trim()} onClick={save}>
             Save
           </button>
           <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
@@ -91,6 +122,7 @@ function TodosView({ onNavigate, renderHeader }) {
   const [todos, setTodos] = useState([]);
   const [newText, setNewText] = useState("");
   const [newDue, setNewDue] = useState("");
+  const [newTime, setNewTime] = useState("");
   const [editTarget, setEditTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [confirmClearDone, setConfirmClearDone] = useState(false);
@@ -107,9 +139,10 @@ function TodosView({ onNavigate, renderHeader }) {
   async function addNew() {
     const text = newText.trim();
     if (!text) return;
-    await addTodo({ text, dueDate: newDue });
+    await addTodo({ text, dueDate: newDue, dueTime: newDue ? normalizeDueTime(newTime) : "" });
     setNewText("");
     setNewDue("");
+    setNewTime("");
     refresh();
     if (typeof schedulePushSync === "function") schedulePushSync(); // due dates moved — refresh the server's alarm schedule
   }
@@ -177,8 +210,21 @@ function TodosView({ onNavigate, renderHeader }) {
             title="Due date (optional)"
             aria-label="Due date (optional)"
             value={newDue}
-            onChange={(e) => setNewDue(e.target.value)}
+            onChange={(e) => {
+              setNewDue(e.target.value);
+              if (!e.target.value) setNewTime(""); // no date → a time has nothing to fire on
+            }}
           />
+          {newDue && (
+            <input
+              className="todo-date"
+              type="time"
+              title="Time (optional)"
+              aria-label="Time (optional)"
+              value={newTime}
+              onChange={(e) => setNewTime(e.target.value)}
+            />
+          )}
           <button className="btn btn-send" onClick={addNew} disabled={!newText.trim()} title="Add" aria-label="Add">
             <i className="bi bi-plus-lg" aria-hidden="true"></i>
           </button>
@@ -216,7 +262,7 @@ function TodosView({ onNavigate, renderHeader }) {
                   {t.text}
                   {t.dueDate && (
                     <span className={urgent ? "todo-due overdue" : "todo-due"}>
-                      <i className="bi bi-calendar-event" aria-hidden="true"></i> {todoDueLabel(t.dueDate)}
+                      <i className="bi bi-calendar-event" aria-hidden="true"></i> {todoDueLabel(t.dueDate, t.dueTime)}
                     </span>
                   )}
                 </span>

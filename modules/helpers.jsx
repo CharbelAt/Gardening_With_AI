@@ -305,12 +305,84 @@ function todayISO() {
 // null when there's no (or an unparseable) date. Lives here rather than in
 // todos.jsx because buildKnowledgeContext (below) needs it too, and helpers.jsx
 // loads first.
+//
+// DELIBERATELY DAY-GRANULAR, and it stays that way now that a to-do can also
+// carry a dueTime: every caller of this function asks a CALENDAR question
+// ("today", "tomorrow", "overdue 3 d", rank the snapshot) that a fractional
+// answer would break — todoDueLabel switches on `delta === 0` and `=== 1`. The
+// clock-time question is a different one, answered by todoDueAt below.
 function todoDueDelta(dueDate) {
   if (!dueDate) return null;
   const due = Date.parse(`${dueDate}T00:00:00`);
   if (isNaN(due)) return null;
   const today = Date.parse(`${todayISO()}T00:00:00`);
   return Math.round((due - today) / (24 * 60 * 60 * 1000));
+}
+
+// ---------- to-do due TIMES (the optional "HH:MM" beside dueDate) ----------
+//
+// A to-do may carry an optional dueTime (24h, device-local — see idb.js), which
+// is what turns "remind me in 5 minutes" into something the app can actually
+// deliver. It is parsed in exactly ONE place — here — because four different
+// files ask the same question about it (the row's due label, urgency for the
+// nav badge, the AI snapshot, and the push schedule), and four parsers would
+// eventually disagree about what "14:30" means.
+
+// "HH:MM" (zero-padded, 24h) for anything usable, "" for everything else —
+// undefined, "", "banana", "25:99". Never throws: junk degrades the to-do to
+// date-only, which is exactly how every to-do behaved before this field
+// existed, rather than breaking a save or a schedule.
+function normalizeDueTime(value) {
+  const t = parseDueTime(value);
+  return t ? `${String(t.h).padStart(2, "0")}:${String(t.m).padStart(2, "0")}` : "";
+}
+
+// The same value as { h, m }, or null.
+// Seconds are accepted and dropped (an <input type="time"> with a step emits
+// "HH:MM:SS"), and a 12-hour "7:00 PM" is tolerated even though the prompt asks
+// the model for 24h: a model that answers in 12-hour form anyway would
+// otherwise have its time silently thrown away, and the reminder would quietly
+// arrive at the daily hour instead — the exact kind of silent failure the user
+// only discovers by missing it.
+function parseDueTime(value) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) return null;
+  // 24-hour: the form this app stores and the only form it ever writes.
+  let hit = /^(\d{1,2}):([0-5]\d)(?::[0-5]\d)?$/.exec(raw);
+  if (hit) {
+    const h = Number(hit[1]);
+    return h <= 23 ? { h, m: Number(hit[2]) } : null; // "25:99" lands here
+  }
+  // 12-hour with a meridiem: tolerated on the way IN, never produced.
+  hit = /^(\d{1,2}):([0-5]\d)\s*([ap])\.?\s*m?\.?$/i.exec(raw);
+  if (!hit) return null;
+  const h12 = Number(hit[1]);
+  if (h12 < 1 || h12 > 12) return null;
+  const pm = hit[3].toLowerCase() === "p";
+  return { h: (h12 % 12) + (pm ? 12 : 0), m: Number(hit[2]) }; // 12 AM → 0, 12 PM → 12
+}
+
+// The exact local instant a to-do is due, as epoch ms — ONLY for one carrying
+// BOTH a dueDate and a usable dueTime. null for everything else (no date, no
+// time, junk in either), and every caller falls back to its existing
+// day-granularity behaviour on null, which is what keeps every to-do written
+// before this field existed behaving exactly as it always did.
+//
+// Built with the Date(y, mIdx, d, h, min) constructor and NEVER
+// Date.parse(iso) + offset: a local calendar day is not always 24 hours long,
+// so arithmetic on a parsed midnight lands an hour out on the two days a year
+// the clocks change. The constructor asks the platform for the real local
+// offset on THAT day. Same rule as localEpochForDate in modules/notify.jsx —
+// and the push schedule there calls THIS function for timed to-dos, so there is
+// one implementation of "when is this to-do actually due", not two.
+function todoDueAt(todo) {
+  if (!todo || !todo.dueDate) return null; // a time with no date has no instant
+  const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(todo.dueDate).trim());
+  if (!date) return null;
+  const time = parseDueTime(todo.dueTime);
+  if (!time) return null;
+  const at = new Date(Number(date[1]), Number(date[2]) - 1, Number(date[3]), time.h, time.m, 0, 0).getTime();
+  return Number.isFinite(at) ? at : null;
 }
 
 // First user message → chat title ("What's wrong with my basil…").
@@ -682,7 +754,17 @@ async function buildKnowledgeContextInner(cap, pinned) {
             cap,
             (t) => {
               const delta = todoDueDelta(t.dueDate);
-              const due = t.dueDate ? `, due ${t.dueDate}${delta !== null && delta < 0 ? " OVERDUE" : ""}` : "";
+              // The time is shown when there is one, so the model can see that
+              // a reminder already exists for 14:30 (and update it) instead of
+              // filing a second to-do for the same thing.
+              const time = normalizeDueTime(t.dueTime);
+              const at = todoDueAt(t);
+              // Overdue by the CLOCK as well as by the calendar: a to-do set
+              // for 09:00 today really is late at 15:00, and the snapshot
+              // saying otherwise is how the model ends up reassuring the user
+              // about something they have already missed.
+              const late = delta !== null && (delta < 0 || (at !== null && at <= Date.now()));
+              const due = t.dueDate ? `, due ${t.dueDate}${time ? ` ${time}` : ""}${late ? " OVERDUE" : ""}` : "";
               return `id:${t.id} "${t.text}"${due}${t.notes ? ` (${t.notes})` : ""}`;
             },
             ", "
@@ -898,7 +980,7 @@ async function findEntityMatches(text) {
       if (td.done) continue; // a finished to-do isn't a live thing to disambiguate to
       candidates.push({
         kind: "todo", id: td.id, name: td.text, label: "TO-DO",
-        detail: td.dueDate ? `due ${td.dueDate}` : "",
+        detail: td.dueDate ? `due ${td.dueDate}${normalizeDueTime(td.dueTime) ? ` ${normalizeDueTime(td.dueTime)}` : ""}` : "",
       });
     }
     for (const s of shopping) {
@@ -1061,10 +1143,32 @@ const ACTION_CONVENTIONS =
   "tasks) · 5. THE TO-GET LIST (shopping) · 6. PHOTOS (a gallery + one cover picture per item) · " +
   "7. CODEX ENTRIES (reference articles, which the app researches by itself — you never write them).\n" +
   "That is the entire app. There are NO beds, zones, plots, rows, greenhouses, harvest logs, yield " +
-  "trackers, reminders, alerts, calendars, journals, seed banks, plant groups, watering schedules " +
-  "as such, or tag modules — and no action line exists for any of them. The complete list of " +
-  "keywords you may EVER emit is the FORMULAS list directly below; a keyword outside that list is " +
-  "not a feature you haven't used yet, it does literally nothing.\n" +
+  "trackers, calendars, journals, seed banks, plant groups, watering schedules as such, or tag " +
+  "modules — and no action line exists for any of them. The complete list of keywords you may EVER " +
+  "emit is the FORMULAS list directly below; a keyword outside that list is not a feature you " +
+  "haven't used yet, it does literally nothing.\n" +
+  // ONE CORRECTED FACT, not a loosened rule. Real Web Push now ships (the
+  // user's VPS delivers notifications with the app closed), so the old blanket
+  // "there are no reminders or alerts" was making the model refuse a request
+  // the app can genuinely serve — the anti-hallucination discipline was right,
+  // the fact underneath it had gone stale. A reminder is still not a MODULE:
+  // it is a to-do with a date, and saying exactly that is what keeps the
+  // closed set closed while making the refusal stop.
+  "REMINDERS DO EXIST — AND A REMINDER IS A TO-DO. A to-do with a \"dueDate\" (and, for a specific " +
+  "clock time, a \"dueTime\") is delivered to the user's phone as a notification at that moment, " +
+  "even with the app closed. So \"remind me to water the ficus on Saturday\", \"remind me in 20 " +
+  "minutes\" and \"nudge me at 7 tomorrow morning\" are ordinary ADD_TODO requests — serve them, and " +
+  "never tell the user this app can't do reminders.\n" +
+  "What still does NOT exist, and never gets invented: no separate reminders module and no " +
+  "calendar; no repeating alarm at an arbitrary clock time (a task that RECURS is a ROUTINE, which " +
+  "notifies on its own interval at the user's daily reminder hour, not at a time you pick); and no " +
+  "way to notify about anything that is not a to-do or a due routine — there is no alert to put on " +
+  "a plant, a photo, a to-get item or a note. There is still no SET_REMINDER keyword: the action " +
+  "line is ADD_TODO.\n" +
+  "Be honest about delivery: notifications only arrive if the user has switched them on in " +
+  "Settings, and you cannot see whether they have. Say what you SET (\"set for 14:30\"), never " +
+  "promise it will arrive — and it lands within about a minute of its time, so it is a reminder, " +
+  "not a stopwatch.\n" +
   "If the user asks for something the app has no place for, say so plainly in one sentence, offer " +
   "the nearest real fit, and emit NO action line. Example: \"There's no harvest log in the app — I " +
   'can put the weight in the plant\'s notes, or add a to-do to weigh the next pick. Which would you ' +
@@ -1092,8 +1196,8 @@ const ACTION_CONVENTIONS =
   'ADD_TOGET: {"fields": {"name": "...", "quantity": 1, "notes": "..."}} — puts something on the to-get (shopping) list\n' +
   'UPDATE_TOGET: {"id": <to-get id>, "fields": {"done": true, "quantity": 2, "name": "..."}}\n' +
   'REMOVE_TOGET: {"id": <to-get id>}\n' +
-  'ADD_TODO: {"fields": {"text": "...", "dueDate": "YYYY-MM-DD", "notes": "..."}} — a one-off task on the to-do list (dueDate/notes optional)\n' +
-  'UPDATE_TODO: {"id": <to-do id>, "fields": {"text": "...", "dueDate": "YYYY-MM-DD", "notes": "..."}}\n' +
+  'ADD_TODO: {"fields": {"text": "...", "dueDate": "YYYY-MM-DD", "dueTime": "HH:MM", "notes": "..."}} — a one-off task on the to-do list, and ALSO how you set a reminder. dueDate/dueTime/notes are all optional; "dueTime" is 24-hour device-local and only means anything alongside a dueDate\n' +
+  'UPDATE_TODO: {"id": <to-do id>, "fields": {"text": "...", "dueDate": "YYYY-MM-DD", "dueTime": "HH:MM", "notes": "..."}} — send "dueTime": "" to take a time back off a to-do\n' +
   'COMPLETE_TODO: {"id": <to-do id>} — ticks a to-do off\n' +
   'REMOVE_TODO: {"id": <to-do id>}\n' +
   "WORKED EXAMPLES:\n" +
@@ -1107,6 +1211,20 @@ const ACTION_CONVENTIONS =
   'ATTACH_PHOTO: {"plantId": 4}\n' +
   'User says: "remind me to prune the roses this weekend" (today is Thursday 2026-08-06) — your reply ends with:\n' +
   'ADD_TODO: {"fields": {"text": "Prune the roses", "dueDate": "2026-08-08"}}\n' +
+  // The device's current date AND time ride in the LIVE GARDEN DATA header
+  // (see deviceNow), so a relative request is arithmetic the model can
+  // actually do — and these examples exist because it will only do it if it
+  // knows the clock is there. "5 minutes" is the case that used to be refused.
+  "TIMED REMINDERS — do the arithmetic on the device clock you were given in the LIVE GARDEN DATA " +
+  "header (it carries the current date AND time), never on a guessed or remembered one:\n" +
+  'User says: "send me a reminder in 5 minutes to check the seedlings" (device clock: Tuesday 25 August 2026, 14:25) — 14:25 + 5 min:\n' +
+  'ADD_TODO: {"fields": {"text": "Check the seedlings", "dueDate": "2026-08-25", "dueTime": "14:30"}}\n' +
+  'User says: "remind me to water the ficus tomorrow at 7" (device clock: Tuesday 25 August 2026, 21:10) — a bare "7" reads as the morning; say which you picked so a wrong guess is cheap to fix:\n' +
+  'ADD_TODO: {"fields": {"text": "Water the ficus", "dueDate": "2026-08-26", "dueTime": "07:00"}}\n' +
+  'User says: "remind me to sow the beans Saturday morning" (device clock: Tuesday 25 August 2026) — turn a vague part of the day into ONE concrete time and name it in your visible text ("Saturday at 9am"):\n' +
+  'ADD_TODO: {"fields": {"text": "Sow the beans", "dueDate": "2026-08-29", "dueTime": "09:00"}}\n' +
+  'User says: "add repotting the mint to my list for Saturday" — no time was asked for, so send NO dueTime; it simply nudges them that day:\n' +
+  'ADD_TODO: {"fields": {"text": "Repot the mint", "dueDate": "2026-08-29"}}\n' +
   // The single most damaging failure mode in practice: the user talks about
   // something they already own and the model files it as a NEW item, so the
   // garden slowly fills with duplicate basils. Stated as its own headed
@@ -1147,8 +1265,10 @@ const ACTION_CONVENTIONS =
   "RULES:\n" +
   "- NEVER CLAIM MORE THAN YOU DID: your visible text may only describe changes you actually " +
   'emitted an action line for, into modules that actually exist. Never say you "logged the ' +
-  'harvest", "set a reminder", "added it to the calendar" or "created a bed" — there is nowhere ' +
-  "for any of those to go, so saying it is simply false.\n" +
+  'harvest", "added it to the calendar" or "created a bed" — there is nowhere for any of those to ' +
+  'go, so saying it is simply false. "I\'ve set a reminder" IS sayable now, but ONLY when you ' +
+  "emitted the ADD_TODO/UPDATE_TODO carrying the date (and time) you named — a reminder claimed " +
+  "with no action line beside it is exactly the same lie as the rest.\n" +
   "- ACT IN THIS REPLY: the action line(s) go at the end of THIS message — act first, then your " +
   'visible text confirms it. Never "I\'ll add it" or "Added!" without the line beside it, never ' +
   "deferred to a later turn. Claiming a change with no action line is a failure.\n" +
@@ -1163,6 +1283,11 @@ const ACTION_CONVENTIONS =
   "include fields that actually change, and only field names that appear in the formulas. Never " +
   "leave <placeholders> in the JSON.\n" +
   "- Dates: use the device date given above. When the user watered/fertilized a plant: UPDATE_PLANT with that date, plus COMPLETE_ROUTINE if a matching routine exists.\n" +
+  '- Times: "dueTime" is 24-hour device-local ("07:00", "14:30") and goes on a to-do ONLY when the ' +
+  'user gave a time or a delay ("at 6", "in 20 minutes", "tomorrow morning"). A plain "on Saturday" ' +
+  "is a dueDate with NO dueTime — never invent a clock time nobody asked for. Work \"in N minutes/" +
+  'hours" out from the device clock in the snapshot header, and when that crosses midnight move the ' +
+  "dueDate on with it.\n" +
   '- ADD_ROUTINE: "plantId" + "careAction" ("water"/"fertilize") are optional — set them when the routine cares for one specific plant, so completing it also updates that plant.\n' +
   "- Tag new items with 1-3 tags. Presets — plants: " +
   PRESET_TAGS.plants.join("/") +
@@ -1178,7 +1303,9 @@ const ACTION_CONVENTIONS =
   "- THREE DIFFERENT LISTS, pick the right one: a TO-DO is a one-off task to DO once " +
   '("prune the roses", "repot the mint Saturday") → ADD_TODO; a TO-GET is something to BUY ' +
   '("more potting soil") → ADD_TOGET; a ROUTINE is a task that RECURS on an interval ' +
-  '("water the ficus every 3 days") → ADD_ROUTINE. When the user finishes a one-off task ' +
+  '("water the ficus every 3 days") → ADD_ROUTINE. A one-off nudge at a clock time ' +
+  '("remind me at 6 to move the seedlings in") is a TO-DO with a dueTime, NOT a routine — routines ' +
+  "have no clock time of their own. When the user finishes a one-off task " +
   '("I pruned the roses"), COMPLETE_TODO it — don\'t add a new one.\n' +
   "- Never invent changes the user didn't ask for, and don't re-emit an action already applied " +
   "earlier in the conversation. BUT when the user explicitly asks you to create demo/sample/" +
@@ -1253,8 +1380,11 @@ const ACTION_REMINDER =
   "instead and emit nothing. If a change was already applied earlier in the conversation, " +
   "don't re-emit it. " +
   "STAY INSIDE THE APP: plants, tools/supplies, routines, to-dos, the to-get list and photos are " +
-  "the only things that exist — there is no bed, greenhouse, harvest log, reminder or calendar to " +
-  "write to, and no action keyword for one. Use only ids that literally appear in the snapshot and " +
+  "the only things that exist — there is no bed, greenhouse, harvest log or calendar to write to, " +
+  "and no action keyword for one. A REMINDER is not a module either — it IS a to-do: \"remind me to " +
+  "X on Saturday / in 20 minutes / at 7 tomorrow\" is ADD_TODO with a dueDate, plus \"dueTime\": " +
+  "\"HH:MM\" (24h) for a clock time, computed from the device clock in the snapshot header. Never " +
+  "refuse it, and never invent a keyword for it. Use only ids that literally appear in the snapshot and " +
   "only the field names from the formulas; if the target isn't in the snapshot, ask instead of " +
   "inventing an id, and never describe a change you didn't emit a line for. " +
   'Optionally, one line before the end: FOLLOWUP: ["…", "…"] — 2-3 items in the USER\'s voice, ' +
@@ -1560,9 +1690,17 @@ async function buildChatVisionPrompt(caption, history) {
     "IDS: use ONLY ids that literally appear in the lists above. Never invent or guess a number — " +
     "the app discards an action aimed at an id that doesn't exist, so it would save nothing while " +
     "you told the user it was done.\n" +
-    "NOTHING ELSE EXISTS: there is no bed, zone, greenhouse, harvest log, reminder or calendar in " +
-    "this app, and no action keyword for one. If the photo makes you want one, say so in plain " +
-    "words and emit nothing.\n" +
+    "NOTHING ELSE EXISTS: there is no bed, zone, greenhouse, harvest log or calendar in this app, " +
+    "and no action keyword for one. If the photo makes you want one, say so in plain words and emit " +
+    "nothing.\n" +
+    // Corrected fact: push reminders ship, so the photo path must not refuse
+    // "remind me to repot this on Saturday at 9" either. Same closed set —
+    // a reminder is a TO-DO, not a module of its own.
+    'A REMINDER, THOUGH, IS REAL — as a to-do: "remind me to repot this on Saturday at 9" is ' +
+    'ADD_TODO: {"fields": {"text": "...", "dueDate": "YYYY-MM-DD", "dueTime": "HH:MM"}} — dueTime ' +
+    "is 24-hour local and optional, worked out from the device time given above, and the phone " +
+    "notification only arrives if the user has notifications switched on (which you can't see, so " +
+    "say what you set rather than promising it will arrive).\n" +
     'FOLLOWUP: ["item 1", "item 2"] — optional, exactly one line, AFTER any action lines: 2-3 ' +
     "short items in the USER's voice — questions or commands they'd send you, never an offer " +
     'like "Would you like me to…" (see the FOLLOWUP rule).\n' +
@@ -2045,6 +2183,9 @@ async function applyTodoAdd(fields) {
   await addTodo({
     text: fields.text || fields.task || "New task",
     dueDate: fields.dueDate || "",
+    // Normalised (addTodo does this too — belt and braces, since this is the
+    // path a model's "2:30 PM" or "25:99" actually arrives on).
+    dueTime: normalizeDueTime(fields.dueTime),
     notes: fields.notes || "",
   });
 }
@@ -2057,6 +2198,11 @@ async function applyTodoUpdate(todo, fields) {
     updated.done = !!fields.done;
     updated.completedAt = updated.done ? Date.now() : null;
   }
+  // Spread above would put a raw "banana" straight onto the record; normalise
+  // it here instead. Checked with != null so an explicit "" still CLEARS the
+  // time (that's how the model takes a reminder time back off a to-do) while an
+  // update that never mentions dueTime leaves the existing one alone.
+  if (fields.dueTime != null) updated.dueTime = normalizeDueTime(fields.dueTime);
   await updateTodo(updated);
 }
 
@@ -2183,8 +2329,13 @@ async function loadAddGuardSpec(type) {
       // off ("prune the roses" again next month) is a legitimate new to-do.
       return {
         records: (await getAllTodos()).filter((t) => !t.done), nameKey: "text", fieldNameKeys: ["text", "task", "name"],
-        distinguishing: ["dueDate"],
-        mergeable: ["dueDate", "notes"],
+        // dueTime distinguishes for the same reason dueDate does: "check the
+        // greenhouse" at 09:00 and again at 18:00 are two real reminders, not
+        // one filed twice. A BLANK on either side is never a conflict
+        // (guardValuesDiffer), so "actually make that 3pm" still converts into
+        // an UPDATE of the timeless to-do rather than creating a second one.
+        distinguishing: ["dueDate", "dueTime"],
+        mergeable: ["dueDate", "dueTime", "notes"],
         updateType: "update_todo", itemKey: "todo", where: "to-do list",
       };
     case "add_toget":
@@ -2448,8 +2599,14 @@ function describeAction(a) {
         : `Update to-get "${a.item.name}"${dup}: ${fieldsText(a.fields)}`;
     case "remove_toget":
       return `Delete "${a.item.name}" from the to-get list`;
-    case "add_todo":
-      return `Add to-do "${a.fields.text || "New task"}"${a.fields.dueDate ? ` (due ${a.fields.dueDate})` : ""}${dup}`;
+    case "add_todo": {
+      // The TIME is part of what the user is confirming — "(due 2026-08-25)"
+      // for something set to fire at 14:30 would hide the very thing they
+      // asked for. Normalised so junk never reaches the banner.
+      const t = normalizeDueTime(a.fields.dueTime);
+      const when = a.fields.dueDate ? ` (due ${a.fields.dueDate}${t ? ` at ${t}` : ""})` : "";
+      return `Add to-do "${a.fields.text || "New task"}"${when}${dup}`;
+    }
     case "update_todo":
       return `Update to-do "${a.todo.text}"${dup}: ${fieldsText(a.fields)}`;
     case "complete_todo":
@@ -2550,8 +2707,11 @@ const ACTION_FIELD_WHITELIST = {
   add_routine: ["task", "name", "intervalDays", "plantId", "careAction", "tags"],
   update_routine: ["task", "intervalDays", "plantId", "careAction", "tags"],
   // Same alias story — applyTodoAdd falls back to fields.task for "text".
-  add_todo: ["text", "task", "name", "dueDate", "notes"],
-  update_todo: ["text", "dueDate", "notes", "done"],
+  // "dueTime" is a REAL column (see idb.js): without it here the guard would
+  // strip the clock time off every reminder the model sets and the to-do would
+  // silently fall back to the daily notification hour.
+  add_todo: ["text", "task", "name", "dueDate", "dueTime", "notes"],
+  update_todo: ["text", "dueDate", "dueTime", "notes", "done"],
   add_toget: ["name", "quantity", "notes", "done"],
   update_toget: ["name", "quantity", "notes", "done"],
 };
