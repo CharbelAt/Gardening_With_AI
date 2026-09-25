@@ -180,12 +180,14 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   const [lightbox, setLightbox] = useState(null); // { src, caption }
   const [comparing, setComparing] = useState(false);
   const [form, setForm] = useState(plantFormFrom(plant));
+  const [noteDraft, setNoteDraft] = useState(null); // null = journal modal closed
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera
 
   // Unconditional (rules of hooks) — only actually closes anything while the
   // edit modal is open.
   useEscapeKey(() => editing && setEditing(false));
+  useEscapeKey(() => noteDraft !== null && setNoteDraft(null));
 
   useEffect(() => {
     (async () => {
@@ -233,6 +235,44 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   function askSprout() {
     onNavigate("chat", {
       draft: `About my plant "${plant.name}"${plant.location ? ` (${plant.location})` : ""}: `,
+    });
+  }
+
+  // Journal: a dated free-text row in the same history log as photos and
+  // waterings — observations, experiments, soil tests, what the frost did.
+  async function saveNote() {
+    const text = (noteDraft || "").trim();
+    if (!text) return;
+    await updatePlant(withLogEntry(plant, text, "journal"));
+    setNoteDraft(null);
+    onChanged();
+  }
+
+  // Companion planting is judged against what the user ACTUALLY grows, so the
+  // draft names their other plants (same spot first — those are the real
+  // neighbours). Sent as a draft, not auto-sent: the user can edit it first.
+  async function askCompanions() {
+    let others = [];
+    try {
+      others = (await getAllPlants()).filter((p) => p.id !== plant.id && p.name);
+    } catch (e) {
+      console.error("companion check: couldn't read plants:", e && e.message);
+    }
+    const here = (plant.location || "").trim().toLowerCase();
+    others.sort((a, b) => {
+      const an = here && (a.location || "").trim().toLowerCase() === here ? 0 : 1;
+      const bn = here && (b.location || "").trim().toLowerCase() === here ? 0 : 1;
+      return an - bn || a.name.localeCompare(b.name);
+    });
+    const list = others
+      .slice(0, 25)
+      .map((p) => `${p.name}${p.location ? ` (${p.location})` : ""}`)
+      .join(", ");
+    const where = plant.location ? ` (${plant.location})` : "";
+    onNavigate("chat", {
+      draft: list
+        ? `Companion check for my "${plant.name}"${where}: which of my other plants are good or bad neighbours for it, and what could I plant next to it? My other plants: ${list}.`
+        : `Companion check for my "${plant.name}"${where}: what grows well next to it, and what should I keep away from it?`,
     });
   }
 
@@ -404,6 +444,8 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
                 label: "Compare photos",
                 onClick: () => setComparing(true),
               },
+              { key: "note", icon: "bi-journal-plus", label: "Add journal note", onClick: () => setNoteDraft("") },
+              { key: "companions", icon: "bi-people", label: "Good neighbours?", onClick: askCompanions },
               { key: "ask", icon: "bi-chat-dots", label: "Ask Sprout", onClick: askSprout },
               { key: "codex", icon: "bi-book", label: "Look up in Codex", onClick: () => onNavigate("codex", { query: plant.name }) },
             ]}
@@ -469,7 +511,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
           defaultOpen={historyStartsOpen}
         >
           {historyEntries.length === 0 ? (
-            <p className="empty-hint">No log entries yet — tap "Add photo" above to start one.</p>
+            <p className="empty-hint">No log entries yet — add a photo, or a journal note from ⋯ above.</p>
           ) : (
             <div className="log-list">
               {historyEntries.map((p, i) => (
@@ -512,6 +554,28 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
 
       {comparing && (
         <PhotoCompareOverlay plant={plant} photos={photoEntries} onClose={() => setComparing(false)} />
+      )}
+
+      {noteDraft !== null && (
+        <div className="modal-backdrop" onClick={() => setNoteDraft(null)}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="plant-note-modal-title" onClick={(e) => e.stopPropagation()}>
+            <h2 id="plant-note-modal-title">Journal note</h2>
+            <label>
+              {plant.name || "This plant"} — {new Date().toLocaleDateString()}
+              <textarea
+                autoFocus
+                rows={4}
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                placeholder="What did you notice? New leaves, pests, a soil test, what you tried…"
+              />
+            </label>
+            <div className="modal-actions">
+              <button className="btn" disabled={!noteDraft.trim()} onClick={saveNote}>Save</button>
+              <button className="btn btn-ghost" onClick={() => setNoteDraft(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {confirmDelete && (
@@ -573,6 +637,7 @@ function GardenView({ initialId, onNavigate }) {
   const [selectedId, setSelectedId] = useState(initialId || null);
   const [showAdd, setShowAdd] = useState(false);
   const [activeTag, setActiveTag] = useState(null);
+  const [showWatering, setShowWatering] = useState(false);
 
   async function refresh() {
     setPlants(await getAllPlants());
@@ -599,6 +664,11 @@ function GardenView({ initialId, onNavigate }) {
     <div className="tab-panel">
       <div className="view-header">
         <h2><i className="bi bi-flower3" aria-hidden="true"></i> Garden</h2>
+        {plants.length > 0 && typeof WateringOverviewModal === "function" && (
+          <button className="icon-btn" onClick={() => setShowWatering(true)} title="Watering overview" aria-label="Watering overview">
+            <i className="bi bi-droplet-half" aria-hidden="true"></i>
+          </button>
+        )}
         <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add plant" aria-label="Add plant"><i className="bi bi-plus-lg" aria-hidden="true"></i></button>
       </div>
       <TagFilterBar items={plants} activeTag={activeTag} onSelect={setActiveTag} />
@@ -631,6 +701,16 @@ function GardenView({ initialId, onNavigate }) {
           );
         })}
       </div>
+      {showWatering && (
+        <WateringOverviewModal
+          onClose={() => setShowWatering(false)}
+          onNavigate={(view, opts) => {
+            // Opening a plant from the overview stays inside this tab.
+            if (view === "garden" && opts && opts.itemId) setSelectedId(opts.itemId);
+            else onNavigate(view, opts);
+          }}
+        />
+      )}
       {showAdd && (
         <AddPlantModal
           onClose={() => setShowAdd(false)}

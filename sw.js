@@ -3,7 +3,7 @@
 // this app is actively being updated — you always want the latest app.jsx
 // over a stale cached copy. The cache is only a fallback for when there's no
 // network at all. AI calls and CDN scripts always go straight to the network.
-const CACHE = "garden-companion-v24"; // v24: time input on to-dos (v23: timed reminders + test-notification fix)
+const CACHE = "garden-companion-v25"; // v25: calendar, watering overview, plant journal, companion check
 const SHELL = [
   "./",
   "./index.html",
@@ -23,6 +23,7 @@ const SHELL = [
   "./modules/inventory.jsx",
   "./modules/routines.jsx",
   "./modules/todos.jsx",
+  "./modules/planner.jsx",
   "./modules/tasks.jsx",
   "./modules/garden.jsx",
   "./modules/codex.jsx",

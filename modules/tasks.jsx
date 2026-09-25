@@ -29,10 +29,12 @@ let tasksLastSection = "routines";
 const TASKS_SECTIONS = [
   { key: "routines", label: "Routines", icon: "bi-arrow-repeat" },
   { key: "todos", label: "To-do", icon: "bi-check2-square" },
+  // Read-only projection of the other two onto a month (planner.jsx).
+  { key: "calendar", label: "Calendar", icon: "bi-calendar3" },
 ];
 
 function isTasksSection(key) {
-  return key === "routines" || key === "todos";
+  return key === "routines" || key === "todos" || key === "calendar";
 }
 
 function TasksView({ initialId, initialSection, onNavigate }) {
@@ -81,6 +83,7 @@ function TasksView({ initialId, initialSection, onNavigate }) {
 
   // initialId only ever addresses a routine (to-dos are edited in place, they
   // have no detail page), so it goes to RoutinesView alone.
+  if (section === "calendar") return <CalendarView onNavigate={onNavigate} renderHeader={renderHeader} />;
   return section === "todos" ? (
     <TodosView onNavigate={onNavigate} renderHeader={renderHeader} />
   ) : (

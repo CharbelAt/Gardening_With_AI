@@ -846,9 +846,14 @@ async function buildKnowledgeContextInner(cap, pinned) {
             (p) => {
               const w = p.lastWatered ? new Date(p.lastWatered).toLocaleDateString() : "never";
               const f = p.lastFertilized ? new Date(p.lastFertilized).toLocaleDateString() : "never";
+              // Latest journal note only, clipped: it is what the user most
+              // recently observed, and the whole journal would swamp the budget.
+              const j = [...(p.photoHistory || [])].reverse().find((h) => h && h.kind === "journal" && h.analysis);
+              const jText = j ? String(j.analysis).replace(/\s+/g, " ").slice(0, 120) : "";
+              const journal = j ? ` | latest journal note (${new Date(j.date).toLocaleDateString()}): "${jText}"` : "";
               return `- id:${p.id} "${p.name}" | location: ${p.location || "unknown"} | planted: ${
                 p.plantingDate || "unknown"
-              } | last watered: ${w} | last fertilized: ${f}${tagsLabel(p)} | notes: ${p.notes || "none"}`;
+              } | last watered: ${w} | last fertilized: ${f}${tagsLabel(p)} | notes: ${p.notes || "none"}${journal}`;
             },
             "\n"
           )

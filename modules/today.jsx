@@ -251,7 +251,7 @@ function TodayView({ onNavigate }) {
                     <span className="today-row-title">{t.text}</span>
                     <span className="today-row-sub">
                       <span className="todo-due overdue">
-                        <i className="bi bi-calendar-event" aria-hidden="true"></i> {todoDueLabel(t.dueDate)}
+                        <i className="bi bi-calendar-event" aria-hidden="true"></i> {todoDueLabel(t.dueDate, t.dueTime)}
                       </span>
                     </span>
                   </span>
