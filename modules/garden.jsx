@@ -238,6 +238,23 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
     });
   }
 
+  // Re-cuts the plant out of its current photo for the Garden view (the
+  // automatic cut can come out ragged on a busy background).
+  async function redoCutout() {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await makePlantCutout(plant);
+      if (result === "unusable") setError("Couldn't separate the plant from this photo's background — it will show as a framed photo. A photo against a plainer background cuts out better.");
+      onChanged();
+    } catch (e) {
+      setError(e.message || "Couldn't make the cutout.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Journal: a dated free-text row in the same history log as photos and
   // waterings — observations, experiments, soil tests, what the frost did.
   async function saveNote() {
@@ -445,6 +462,12 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
                 onClick: () => setComparing(true),
               },
               { key: "note", icon: "bi-journal-plus", label: "Add journal note", onClick: () => setNoteDraft("") },
+              heroSrc && typeof makePlantCutout === "function" && {
+                key: "cutout",
+                icon: "bi-scissors",
+                label: "Redo garden cutout",
+                onClick: redoCutout,
+              },
               { key: "companions", icon: "bi-people", label: "Good neighbours?", onClick: askCompanions },
               { key: "ask", icon: "bi-chat-dots", label: "Ask Sprout", onClick: askSprout },
               { key: "codex", icon: "bi-book", label: "Look up in Codex", onClick: () => onNavigate("codex", { query: plant.name }) },
@@ -638,6 +661,16 @@ function GardenView({ initialId, onNavigate }) {
   const [showAdd, setShowAdd] = useState(false);
   const [activeTag, setActiveTag] = useState(null);
   const [showWatering, setShowWatering] = useState(false);
+  // Grid (cards) or garden (pots on shelves, zen.jsx). Remembered per device.
+  const [viewMode, setViewMode] = useState(() =>
+    typeof getGardenViewMode === "function" ? getGardenViewMode() : "grid"
+  );
+  const gardenViewAvailable = typeof ZenGardenView === "function";
+  const showGardenView = gardenViewAvailable && viewMode === "garden";
+  function chooseView(mode) {
+    setViewMode(mode);
+    if (typeof setGardenViewMode === "function") setGardenViewMode(mode);
+  }
 
   async function refresh() {
     setPlants(await getAllPlants());
@@ -671,7 +704,28 @@ function GardenView({ initialId, onNavigate }) {
         )}
         <button className="icon-btn" onClick={() => setShowAdd(true)} title="Add plant" aria-label="Add plant"><i className="bi bi-plus-lg" aria-hidden="true"></i></button>
       </div>
+      {gardenViewAvailable && plants.length > 0 && (
+        <div className="segmented" role="group" aria-label="Garden layout">
+          {[
+            { key: "grid", label: "Cards", icon: "bi-grid-3x2-gap" },
+            { key: "garden", label: "Garden", icon: "bi-flower1" },
+          ].map((o) => (
+            <button
+              type="button"
+              key={o.key}
+              className={viewMode === o.key ? "segmented-option active" : "segmented-option"}
+              aria-pressed={viewMode === o.key}
+              onClick={() => chooseView(o.key)}
+            >
+              <i className={`bi ${o.icon}`} aria-hidden="true"></i> {o.label}
+            </button>
+          ))}
+        </div>
+      )}
       <TagFilterBar items={plants} activeTag={activeTag} onSelect={setActiveTag} />
+      {showGardenView && plants.length > 0 ? (
+        <ZenGardenView plants={visible} onOpen={(p) => setSelectedId(p.id)} onChanged={refresh} />
+      ) : (
       <div className="item-grid">
         {plants.length === 0 && (
           <div className="empty-state">
@@ -701,6 +755,7 @@ function GardenView({ initialId, onNavigate }) {
           );
         })}
       </div>
+      )}
       {showWatering && (
         <WateringOverviewModal
           onClose={() => setShowWatering(false)}

@@ -180,7 +180,11 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
         `product it is, active ingredients, the dosage/mixing rate and how to apply it, and the key ` +
         `safety warnings. If it is a plain tool with no label, explain what the tool is and how and ` +
         `when to use it instead. Answer in 4-8 concise sentences (markdown allowed, no headings). ` +
-        `If the label is unreadable in this photo, say so plainly instead of guessing.\n` +
+        `IF THE LABEL IS BLURRY OR ONLY PARTLY READABLE: the big print (brand, product name, active ` +
+        `ingredient, concentration) usually is readable — identify the product from it, look it up ` +
+        `with web search if you have it, and give the rates from that, saying which parts you read ` +
+        `and which you looked up. Only if not even the product name is readable, say so and ask for ` +
+        `the brand and product name (not another photo).\n` +
         `You may end your reply with hidden lines — never mention them in your visible text:\n` +
         `UPDATE_TOOL: {"id": ${tool.id}, "fields": {"brand": "...", "tags": ["..."], "condition": "new|good|worn|needs repair", "notes": "..."}} ` +
         `— ONLY fields you are CONFIDENT about from the photo. "notes" REPLACES the old notes, so ` +

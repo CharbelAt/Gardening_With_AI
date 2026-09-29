@@ -213,18 +213,45 @@ const PROMPT_PERSONA = "You are Sprout, a friendly, knowledgeable gardening comp
 // The advisory half: only worth its ~150 tokens when the user actually asked
 // something. A command ("add pumpkin seeds") has no species to identify, no
 // symptoms to describe and no source to cite.
+// User, 2026-09-29, after a dosage question went round in circles ("send a
+// clearer photo of the label" x4, then "take it to a shop"): "the point of the
+// bot is for it to know how to act". The old wording — ask whenever unsure,
+// never guess — was obeyed so literally that the model refused to answer at
+// all. The rule now is: answer with the best-supported value, say where it
+// came from, research what you don't know, and ask only for things that can't
+// be looked up (and then for the brand, never for another photo).
 const PROMPT_ADVICE =
-  "Give practical, " +
-  "concrete advice (watering, light, soil, pests, timing) suited to home gardeners. " +
-  "If you're not fully confident about a specific fact — exact species identification, " +
-  "disease diagnosis, or precise care details — say so plainly rather than guessing " +
-  "confidently, and search for or reference a trusted source (university extension " +
-  "services, RHS, Missouri Botanical Garden, etc.) when you can. " +
-  "ASK WHEN UNSURE: if the question is ambiguous, or a missing detail would materially " +
-  "change your answer (which plant or variety, indoor vs outdoor, their climate/location, " +
-  "what the symptoms actually look like and when they started), ask ONE short clarifying " +
-  "question first instead of guessing — and in that reply emit no action lines. " +
-  "When the detail doesn't change the answer, just answer. ";
+  "Give practical, concrete advice (watering, light, soil, pests, timing) suited to home gardeners.\n" +
+  "STRAIGHT ANSWERS — the user needs to know what to DO, not to be sent away:\n" +
+  "- Answer with something they can act on: a number, a product, a step. Never reply only with " +
+  "\"check the label\", \"send a clearer photo\" or \"ask a shop\".\n" +
+  "- Where facts come from, in this order: (1) what is already saved about the item — its label " +
+  "reading, notes and Codex entry (the WHAT YOU ALREADY KNOW block); (2) a web search, whenever you " +
+  "have a search tool and aren't sure of a fact (a product's active ingredient and label rates, a " +
+  "pest, a disease) — search the brand + product name, or the active ingredient; (3) your own " +
+  "knowledge of that active ingredient or product type and its usual label rate. Say which one you " +
+  "used in a few words (\"per your label photo\", \"per the manufacturer's page\", \"usual label rate " +
+  "for abamectin 1.8% EC\").\n" +
+  "- DOSES AND MIXING: work it out for the user's own sprayer/can volume and show the arithmetic in " +
+  "one line. If their plant isn't listed on the label, use the rate for the closest listed crop and " +
+  "pest and say so. If the amount is tiny, say how to measure it (a 1 mL syringe, or mix a bigger " +
+  "batch). Then at most ONE line of the safety points that really apply (days before harvest, " +
+  "gloves, don't mix with X) — safety notes go WITH the answer, never instead of it.\n" +
+  "- NAMES MAY BE MISHEARD: messages are often dictated, so a product name can arrive garbled " +
+  "(\"Autopilus\"). Match it to the closest item in their inventory or the closest real product, " +
+  "and say which one you assumed.\n" +
+  "- DON'T KNOW THE PRODUCT AT ALL? Ask ONE question you can research from: the brand/manufacturer " +
+  "and the product name printed in big letters on the front (or the active ingredient). Never ask " +
+  "for another photo of the fine print. When they answer, look it up and answer in that same reply.\n" +
+  "- ASK only when the missing detail changes the answer AND can't be looked up (which of their " +
+  "plants, indoors or outdoors). Otherwise give your best answer and label it as an estimate. For " +
+  "an uncertain diagnosis or ID, say how sure you are in a few words, then still give the most likely " +
+  "answer and what to do about it; in a reply that only asks a question, emit no action lines.\n" +
+  "- REMEMBER WHAT YOU LEARN: after researching or working out facts the user will need again (what " +
+  "a product is, active ingredient, rates, how to apply), save them — SAVE_CODEX with a compact " +
+  "reference and, for an item in their inventory, UPDATE_TOOL its \"brand\"/\"productInfo\" as well — " +
+  "so next time it is already in the WHAT YOU ALREADY KNOW block. Don't save chit-chat or re-save " +
+  "what is already there.\n";
 
 // What replaces it in act mode: the job, in two sentences. The "ask instead of
 // guessing" half of PROMPT_ADVICE survives here in the form that matters for a
@@ -518,6 +545,10 @@ const CODEX_RESEARCH_SYSTEM =
   "temperature needs, feeding, common pests and diseases, propagation, and any toxicity " +
   "to humans or pets. For a TOOL or SUPPLY: what it is, what it's used for, how and when " +
   "to use it correctly, active ingredients or materials where relevant, safety precautions, " +
+  "and — for a packaged product (fertilizer, pesticide, fungicide) — its active ingredient and " +
+  "concentration plus the label mixing rates (per litre and per 100 L) for its main uses and the " +
+  "days to wait before harvest. If identification hints are given, use them to pick the right " +
+  "product: trade names repeat across countries and manufacturers. " +
   "and storage/maintenance. Use markdown sparingly (bold key terms). After the entry, on " +
   "its own final line, output exactly: SOURCES: <1-3 real source URLs, comma separated> — " +
   "or SOURCES: none if you're not confident of a real source. Never omit that line.";
@@ -566,11 +597,25 @@ async function researchCodexItem(kind, clean) {
   try {
     const existing = await getAllCodexEntries();
     if (existing.some((e) => (e.itemName || e.title || "").trim().toLowerCase() === norm)) return;
+    // A product name alone is often ambiguous ("Ticket", "Alpha Plus" are
+    // trade names that mean different things in different countries), so a
+    // tool's brand and saved label reading go along as identification hints.
+    let hints = "";
+    if (kind !== "plant") {
+      const tool = (await getAllTools()).find((t) => (t.name || "").trim().toLowerCase() === norm);
+      if (tool) {
+        const bits = [];
+        if (tool.brand) bits.push(`brand: ${tool.brand}`);
+        if (hasProductInfo(tool)) bits.push(`label reading from the user's photo: ${clipForPrompt(tool.productInfo, 800)}`);
+        if (tool.notes) bits.push(`user's notes: ${clipForPrompt(tool.notes, 200)}`);
+        if (bits.length) hints = `\nIdentification hints — ${bits.join("; ")}`;
+      }
+    }
     const data = await apiFetch("/api/chat", {
       mode: "research",
       messages: [
         { role: "system", content: CODEX_RESEARCH_SYSTEM },
-        { role: "user", content: `${kind === "plant" ? "Plant" : "Tool/supply"}: ${clean}` },
+        { role: "user", content: `${kind === "plant" ? "Plant" : "Tool/supply"}: ${clean}${hints}` },
       ],
     });
     const { body, sources } = extractSources(data.reply || "");
@@ -719,10 +764,29 @@ async function buildKnowledgeContext(opts) {
   const mode = (opts && opts.mode) === "act" ? "act" : "chat";
   const cap = mode === "act" ? SNAPSHOT_ITEM_CAP_ACT : SNAPSHOT_ITEM_CAP;
   const pinned = (opts && opts.pinned) || null;
-  return buildKnowledgeContextInner(cap, pinned);
+  return buildKnowledgeContextInner(cap, pinned, mode === "chat");
 }
 
-async function buildKnowledgeContextInner(cap, pinned) {
+// Collapses markdown/whitespace and clips, for one-line prompt summaries.
+function clipForPrompt(text, max) {
+  const t = String(text || "")
+    .replace(/[#*_`>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+
+// productInfo values that are placeholders, not a label reading.
+const PRODUCT_INFO_PLACEHOLDER_RE = /^(No product details could be read|Photo saved \(AI analysis unavailable\))/i;
+function hasProductInfo(t) {
+  return !!(t && t.productInfo && !PRODUCT_INFO_PLACEHOLDER_RE.test(String(t.productInfo).trim()));
+}
+
+// `detailed` (chat mode): each tool line also carries its notes and the start
+// of its label reading. Without them the model saw "Alpha Plus x1" and nothing
+// else, and told the user it couldn't know what Alpha Plus was — while the
+// label reading sat in the database one field away.
+async function buildKnowledgeContextInner(cap, pinned, detailed = false) {
   const [tools, routines, plants, shopping, todos] = await Promise.all([
     getAllTools(),
     getAllRoutines(),
@@ -802,7 +866,9 @@ async function buildKnowledgeContextInner(cap, pinned) {
               const extras = [t.condition, t.location ? `stored: ${t.location}` : "", t.brand]
                 .filter(Boolean)
                 .join(", ");
-              return `id:${t.id} "${t.name}" x${t.quantity}${extras ? ` (${extras})` : ""}${tagsLabel(t)}`;
+              const notes = detailed && t.notes ? ` | notes: ${clipForPrompt(t.notes, 100)}` : "";
+              const label = detailed && hasProductInfo(t) ? ` | label: ${clipForPrompt(t.productInfo, 160)}` : "";
+              return `id:${t.id} "${t.name}" x${t.quantity}${extras ? ` (${extras})` : ""}${tagsLabel(t)}${notes}${label}`;
             },
             ", "
           )
@@ -1082,6 +1148,96 @@ async function buildEntityHints(text) {
   return formatEntityHints(await findEntityMatches(text));
 }
 
+// ---------- WHAT YOU ALREADY KNOW: saved label readings + Codex, per turn ----------
+//
+// The Codex auto-researches every item, and photos of labels are stored as
+// productInfo — but none of it ever reached the chat model, which then asked
+// the user for the label again. This block carries the FULL saved knowledge
+// for the items the recent conversation is about, plus (for a spraying/dosing/
+// pest question) every product in the inventory, so "see what we have in the
+// armory" can actually be answered.
+const REFERENCE_CARE_RE =
+  /\b(spray\w*|dos(e|es|age|ing)|dilut\w*|mix(ing)?|rates?|pests?|mites?|aphids?|whitefl\w*|fung\w*|mildew|mold|mould|insect\w*|fertili[sz]\w*|feed(ing)?|treat\w*|armou?ry|inventory|products?|bottle|label|ml|litres?|liters?|how much)\b/i;
+const REFERENCE_BLOCK_MAX_CHARS = 7000;
+const REFERENCE_ITEM_MAX_CHARS = 1400;
+
+async function buildReferenceBlock(history) {
+  try {
+    const users = (history || []).filter((m) => m && m.role === "user").slice(-3);
+    const text = users.map((m) => m.text || "").join("\n");
+    if (!text.trim()) return "";
+    const [matches, tools, plants, codex] = await Promise.all([
+      findEntityMatches(text),
+      getAllTools(),
+      getAllPlants(),
+      getAllCodexEntries(),
+    ]);
+    const keys = entityMatchKeys(matches);
+    const norm = (x) => String(x || "").trim().toLowerCase();
+    const codexFor = (name) =>
+      codex.find((c) => norm(c.itemName) === norm(name)) || codex.find((c) => norm(c.title) === norm(name));
+
+    const pickedTools = tools.filter((t) => keys.has(`tool:${t.id}`));
+    if (REFERENCE_CARE_RE.test(text)) {
+      for (const t of tools) {
+        if (pickedTools.includes(t)) continue;
+        const productish =
+          hasProductInfo(t) ||
+          (t.tags || []).some((g) => /pesticide|fertili[sz]er|fungicide|insecticide|consumable/i.test(g));
+        if (productish) pickedTools.push(t);
+      }
+    }
+    const pickedPlants = plants.filter((p) => keys.has(`plant:${p.id}`));
+    const pickedCodex = codex.filter((c) => keys.has(`codex:${c.id}`));
+
+    const blocks = [];
+    const usedCodex = new Set();
+    for (const t of pickedTools) {
+      const lines = [`INVENTORY id:${t.id} "${t.name}"${t.brand ? ` — brand: ${t.brand}` : ""}`];
+      if (hasProductInfo(t)) lines.push(`  saved label reading: ${clipForPrompt(t.productInfo, REFERENCE_ITEM_MAX_CHARS)}`);
+      if (t.notes) lines.push(`  notes: ${clipForPrompt(t.notes, 300)}`);
+      const c = codexFor(t.name);
+      if (c) {
+        usedCodex.add(c.id);
+        lines.push(`  Codex: ${clipForPrompt(c.body, REFERENCE_ITEM_MAX_CHARS)}`);
+      }
+      if (lines.length > 1) blocks.push(lines.join("\n"));
+    }
+    for (const p of pickedPlants) {
+      const c = codexFor(p.name);
+      if (!c) continue;
+      usedCodex.add(c.id);
+      blocks.push(`PLANT id:${p.id} "${p.name}"\n  Codex: ${clipForPrompt(c.body, 900)}`);
+    }
+    for (const c of pickedCodex) {
+      if (usedCodex.has(c.id)) continue;
+      blocks.push(`CODEX "${c.title || c.itemName}"\n  ${clipForPrompt(c.body, REFERENCE_ITEM_MAX_CHARS)}`);
+    }
+    if (!blocks.length) return "";
+
+    let body = "";
+    let dropped = 0;
+    for (const b of blocks) {
+      if (body.length + b.length > REFERENCE_BLOCK_MAX_CHARS) {
+        dropped++;
+        continue;
+      }
+      body += (body ? "\n" : "") + b;
+    }
+    return (
+      "\n\n=== WHAT YOU ALREADY KNOW about the items in this conversation (saved label readings from " +
+      "the user's own photos, and Codex research) ===\n" +
+      body +
+      (dropped ? `\n(${dropped} more item(s) not shown for space.)` : "") +
+      "\nUse this FIRST — before searching and before asking the user anything. If it answers the " +
+      "question, answer from it and say so.\n=== END WHAT YOU ALREADY KNOW ==="
+    );
+  } catch (e) {
+    console.error("buildReferenceBlock failed:", e && e.message);
+    return "";
+  }
+}
+
 // "kind:id" keys for every item the user's message named — the set
 // buildKnowledgeContext pins to the front of its lists so truncation can never
 // drop the one thing the request is about.
@@ -1146,10 +1302,13 @@ const ACTION_CONVENTIONS =
   "There are exactly seven places anything can be saved, and no others: 1. PLANTS (the Garden) · " +
   "2. TOOLS & SUPPLIES (the Inventory) · 3. ROUTINES (recurring care tasks) · 4. TO-DOS (one-off " +
   "tasks) · 5. THE TO-GET LIST (shopping) · 6. PHOTOS (a gallery + one cover picture per item) · " +
-  "7. CODEX ENTRIES (reference articles, which the app researches by itself — you never write them).\n" +
+  "7. CODEX ENTRIES (reference articles: the app researches one for every new item, and YOU save " +
+  "what you research with SAVE_CODEX).\n" +
   "That is the entire app. There are NO beds, zones, plots, rows, greenhouses, harvest logs, yield " +
-  "trackers, calendars, journals, seed banks, plant groups, watering schedules as such, or tag " +
-  "modules — and no action line exists for any of them. The complete list of keywords you may EVER " +
+  "trackers, seed banks, plant groups, watering schedules as such, or tag modules — and no action " +
+  "line exists for any of them. (The Calendar screen and each plant's journal only DISPLAY data: a " +
+  "dated to-do or a routine appears in the calendar by itself, and journal notes are written by the " +
+  "user.) The complete list of keywords you may EVER " +
   "emit is the FORMULAS list directly below; a keyword outside that list is not a feature you " +
   "haven't used yet, it does literally nothing.\n" +
   // ONE CORRECTED FACT, not a loosened rule. Real Web Push now ships (the
@@ -1164,8 +1323,8 @@ const ACTION_CONVENTIONS =
   "even with the app closed. So \"remind me to water the ficus on Saturday\", \"remind me in 20 " +
   "minutes\" and \"nudge me at 7 tomorrow morning\" are ordinary ADD_TODO requests — serve them, and " +
   "never tell the user this app can't do reminders.\n" +
-  "What still does NOT exist, and never gets invented: no separate reminders module and no " +
-  "calendar; no repeating alarm at an arbitrary clock time (a task that RECURS is a ROUTINE, which " +
+  "What still does NOT exist, and never gets invented: no separate reminders module and nothing " +
+  "to write into the calendar; no repeating alarm at an arbitrary clock time (a task that RECURS is a ROUTINE, which " +
   "notifies on its own interval at the user's daily reminder hour, not at a time you pick); and no " +
   "way to notify about anything that is not a to-do or a due routine — there is no alert to put on " +
   "a plant, a photo, a to-get item or a note. There is still no SET_REMINDER keyword: the action " +
@@ -1190,8 +1349,9 @@ const ACTION_CONVENTIONS =
   'UPDATE_PLANT: {"id": <plant id>, "fields": {"lastWatered": "YYYY-MM-DD", "lastFertilized": "YYYY-MM-DD", "name": "...", "location": "...", "notes": "...", "tags": ["..."]}}\n' +
   'REMOVE_PLANT: {"id": <plant id>} — a routine linked to it survives, unlinked\n' +
   'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "notes": "...", "tags": ["..."], "brand": "...", "condition": "new|good|worn|needs repair", "location": "...", "purchaseDate": "YYYY-MM-DD", "price": 0}}\n' +
-  'UPDATE_TOOL: {"id": <tool id>, "fields": {"quantity": 2, "notes": "...", "tags": ["..."], "brand": "...", "condition": "...", "location": "...", "lastUsed": "YYYY-MM-DD", "price": 0}}\n' +
+  'UPDATE_TOOL: {"id": <tool id>, "fields": {"quantity": 2, "notes": "...", "tags": ["..."], "brand": "...", "condition": "...", "location": "...", "lastUsed": "YYYY-MM-DD", "price": 0, "productInfo": "..."}} — "productInfo" is the item\'s product sheet (type, active ingredient, rates per litre, how to apply, safety); it REPLACES the old one, so keep what was right and add what you learned\n' +
   'REMOVE_TOOL: {"id": <tool id>}\n' +
+  'SAVE_CODEX: {"fields": {"title": "...", "body": "...", "sources": ["https://..."], "itemName": "..."}} — saves a reference note to the Codex (saved immediately, no confirmation). "title" = the product/plant/topic; "body" = the facts, compact, markdown ok; "sources" = real URLs you used, or []; "itemName" = the exact name of their inventory item or plant it is about, if any. Saving the same title again replaces the old note.\n' +
   'ADD_ROUTINE: {"fields": {"task": "...", "intervalDays": 3, "plantId": <plant id>, "careAction": "water", "tags": ["..."]}}\n' +
   'UPDATE_ROUTINE: {"id": <routine id>, "fields": {"task": "...", "intervalDays": 5, "tags": ["..."]}}\n' +
   'COMPLETE_ROUTINE: {"id": <routine id>}\n' +
@@ -1385,7 +1545,7 @@ const ACTION_REMINDER =
   "instead and emit nothing. If a change was already applied earlier in the conversation, " +
   "don't re-emit it. " +
   "STAY INSIDE THE APP: plants, tools/supplies, routines, to-dos, the to-get list and photos are " +
-  "the only things that exist — there is no bed, greenhouse, harvest log or calendar to write to, " +
+  "the only things that exist — there is no bed, greenhouse or harvest log, and nothing to write into the calendar, " +
   "and no action keyword for one. A REMINDER is not a module either — it IS a to-do: \"remind me to " +
   "X on Saturday / in 20 minutes / at 7 tomorrow\" is ADD_TODO with a dueDate, plus \"dueTime\": " +
   "\"HH:MM\" (24h) for a clock time, computed from the device clock in the snapshot header. Never " +
@@ -1508,7 +1668,10 @@ async function buildContextMessages(history, mode) {
   // right now" material, and short enough to ride on every request. "" when
   // the user has weather off or it couldn't be fetched.
   const weather = await getWeatherContextBlock();
-  const sys = SYSTEM_PROMPT_BASE + knowledge + weather + ACTION_CONVENTIONS;
+  // Questions only: a command needs ids, not product sheets (and act mode
+  // still runs on small token budgets further down the chain).
+  const reference = act ? "" : await buildReferenceBlock(history);
+  const sys = SYSTEM_PROMPT_BASE + knowledge + reference + weather + ACTION_CONVENTIONS;
   const msgs = [{ role: "system", content: sys }];
   // Truncation is announced rather than silent — otherwise the model answers
   // confidently about turns it can no longer see.
@@ -1613,7 +1776,11 @@ async function buildChatVisionPrompt(caption, history) {
     `\nTOOLS & SUPPLIES (${tools.length}): ` +
     (tools.length
       ? tools
-          .map((t) => `id:${t.id} "${t.name}"${t.brand ? ` — ${t.brand}` : ""} x${t.quantity == null ? 1 : t.quantity}`)
+          .map(
+            (t) =>
+              `id:${t.id} "${t.name}"${t.brand ? ` — ${t.brand}` : ""} x${t.quantity == null ? 1 : t.quantity}` +
+              (hasProductInfo(t) ? ` [label: ${clipForPrompt(t.productInfo, 120)}]` : "")
+          )
           .join(", ")
       : "none saved yet") +
     "\n=== END ===\n";
@@ -1621,6 +1788,10 @@ async function buildChatVisionPrompt(caption, history) {
   // "lenovo"), just lighter-weight since a photo caption is usually short —
   // buildEntityHints itself already keeps this a no-op when nothing matches.
   const entityHints = await buildEntityHints(caption || "");
+  // What is already saved about the product(s) in this thread — a label photo
+  // is usually a follow-up to a dosing question, and the answer may already be
+  // in the item's earlier label reading or its Codex entry.
+  const reference = await buildReferenceBlock([...(history || []), { role: "user", text: caption || "" }]);
   const transcript = formatRecentTranscript(history);
   const conversation = transcript
     ? "\n=== RECENT CONVERSATION (before this photo) ===\n" +
@@ -1636,6 +1807,8 @@ async function buildChatVisionPrompt(caption, history) {
     `The user's device says it is now: ${deviceNow()}. ` +
     `The user's message with this photo: "${caption}".\n` +
     inventory +
+    reference +
+    (reference ? "\n" : "") +
     conversation +
     entityHints +
     (entityHints ? "\n" : "") +
@@ -1649,6 +1822,12 @@ async function buildChatVisionPrompt(caption, history) {
     "never force a plant identification onto a photo that isn't of a plant. If it is a product " +
     "label, read the label instead: product name, brand, what type of product it is, active " +
     "ingredients, dosage/mixing rate, and the key safety warnings.\n" +
+    "BLURRY OR PARTLY READABLE LABEL: the big print (brand, product name, active ingredient, " +
+    "concentration) is usually legible even when the table isn't. Identify the product from it, " +
+    "look it up with web search if you have it, and give the rates from that — saying which parts " +
+    "you read and which you looked up. Ask for another photo only if not even the product name is " +
+    "readable, and then ask for the brand and product name instead. Save what you learn: " +
+    "UPDATE_TOOL the item's \"productInfo\" (and SAVE_CODEX).\n" +
     "IF YOU CANNOT TELL WHICH ITEM IT IS, ASK — one short question, and emit no action line at " +
     'all: "Is this the balcony basil or the kitchen one?" Guessing files the photo, or a whole ' +
     "new record, against the wrong item and the user has to undo it. Asking costs one message.\n" +
@@ -1685,7 +1864,8 @@ async function buildChatVisionPrompt(caption, history) {
     "  to-dos   — ADD_TODO, UPDATE_TODO, COMPLETE_TODO, REMOVE_TODO\n" +
     "  shopping — ADD_TOGET, UPDATE_TOGET, REMOVE_TOGET\n" +
     "  photos   — ATTACH_PHOTO, SET_COVER\n" +
-    "That is all nineteen; there are no others. Serve the WHOLE message: if it asks for a change " +
+    "  codex    — SAVE_CODEX {\"fields\": {\"title\", \"body\", \"sources\", \"itemName\"}} (a reference note)\n" +
+    "That is all twenty; there are no others. Serve the WHOLE message: if it asks for a change " +
     "the picture is only context for, emit that action line too rather than answering about the " +
     "photo alone.\n" +
     // A photo is the LAST place a delete should come from — the user sent a
@@ -1695,7 +1875,7 @@ async function buildChatVisionPrompt(caption, history) {
     "IDS: use ONLY ids that literally appear in the lists above. Never invent or guess a number — " +
     "the app discards an action aimed at an id that doesn't exist, so it would save nothing while " +
     "you told the user it was done.\n" +
-    "NOTHING ELSE EXISTS: there is no bed, zone, greenhouse, harvest log or calendar in this app, " +
+    "NOTHING ELSE EXISTS: there is no bed, zone, greenhouse or harvest log in this app, " +
     "and no action keyword for one. If the photo makes you want one, say so in plain words and emit " +
     "nothing.\n" +
     // Corrected fact: push reminders ship, so the photo path must not refuse
@@ -1742,6 +1922,7 @@ const ACTION_TYPE_MAP = {
   UPDATE_TODO: "update_todo",
   COMPLETE_TODO: "complete_todo",
   REMOVE_TODO: "remove_todo",
+  SAVE_CODEX: "save_codex",
 };
 
 // A DESTRUCTIVE action is one that destroys a record the user cannot get back.
@@ -1772,7 +1953,7 @@ function isDestructiveAction(type) {
 // engine's leftmost-alternative rule (guarded by a test in run_app2.js, and by
 // the REMOVE_TOGET/REMOVE_TODO twin of it).
 const ACTION_START_RE =
-  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|REMOVE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|REMOVE_ROUTINE|ATTACH_PHOTO|SET_COVER|ADD_TOGET|UPDATE_TOGET|REMOVE_TOGET|ADD_TODO|UPDATE_TODO|COMPLETE_TODO|REMOVE_TODO)\**[ \t]*:[ \t\n]*\{/g;
+  /(?:^|\n)[ \t>*`-]*(ADD_PLANT|UPDATE_PLANT|REMOVE_PLANT|ADD_TOOL|UPDATE_TOOL|REMOVE_TOOL|ADD_ROUTINE|UPDATE_ROUTINE|COMPLETE_ROUTINE|REMOVE_ROUTINE|ATTACH_PHOTO|SET_COVER|ADD_TOGET|UPDATE_TOGET|REMOVE_TOGET|ADD_TODO|UPDATE_TODO|COMPLETE_TODO|REMOVE_TODO|SAVE_CODEX)\**[ \t]*:[ \t\n]*\{/g;
 
 // Hidden action lines for modules this app does NOT have — "ADD_BED",
 // "LOG_HARVEST", "SET_REMINDER", "ADD_GREENHOUSE". ACTION_START_RE already
@@ -2051,6 +2232,52 @@ function withCareLogEntry(plant, text, kind) {
   const last = [...hist].reverse().find((h) => h.kind === kind);
   if (last && daysSince(last.date) === 0) return plant; // already logged today
   return withLogEntry(plant, text, kind);
+}
+
+// ---------- SAVE_CODEX: the model binding what it learned to the Codex ----------
+
+const CODEX_BODY_MAX_CHARS = 6000;
+
+// Cleans a SAVE_CODEX payload; null when there is nothing worth saving.
+// Sources must be real http(s) URLs — the Codex renders them as links.
+function normalizeCodexFields(f) {
+  const title = String(f.title || "").trim().slice(0, 120);
+  const body = String(f.body || "").trim().slice(0, CODEX_BODY_MAX_CHARS);
+  if (!title || !body) return null;
+  const rawSources = Array.isArray(f.sources)
+    ? f.sources
+    : typeof f.sources === "string"
+      ? f.sources.split(/[,\s]+/)
+      : [];
+  const sources = rawSources
+    .map((u) => String(u || "").trim())
+    .filter((u) => /^https?:\/\/\S+$/i.test(u))
+    .slice(0, 6);
+  const itemName = String(f.itemName || "").trim().slice(0, 120);
+  return { title, body, sources, itemName };
+}
+
+// Upsert by title (case-insensitive), or by the item it is about: saving
+// "Alpha Plus" twice refreshes one note instead of piling up copies — and it
+// REPLACES the item's auto-researched entry, which was written from the item
+// name alone and is exactly what the model's research improves on.
+async function applyCodexSave(fields) {
+  const norm = (x) => String(x || "").trim().toLowerCase();
+  const entries = await getAllCodexEntries();
+  const existing =
+    entries.find((e) => norm(e.title) === norm(fields.title)) ||
+    (fields.itemName ? entries.find((e) => norm(e.itemName) === norm(fields.itemName)) : null);
+  const itemName = fields.itemName || (existing && existing.itemName) || "";
+  const record = {
+    title: fields.title,
+    body: fields.body,
+    sources: fields.sources,
+    kind: existing && existing.kind ? existing.kind : "topic",
+    ...(itemName ? { itemName } : {}),
+    auto: false,
+  };
+  if (existing) return updateCodexEntry({ ...existing, ...record, updatedAt: Date.now() });
+  return addCodexEntry(record);
 }
 
 async function applyPlantUpdate(plant, fields) {
@@ -2539,6 +2766,10 @@ async function resolveAction(action, ctx) {
       const routine = await resolveRoutineTarget(action);
       return routine ? { type: "remove_routine", routine } : null;
     }
+    case "save_codex": {
+      const f = normalizeCodexFields(action.fields || {});
+      return f ? { type: "save_codex", fields: f } : null;
+    }
     default:
       return null;
   }
@@ -2618,6 +2849,8 @@ function describeAction(a) {
       return `Tick off to-do "${a.todo.text}"`;
     case "remove_todo":
       return `Delete the to-do "${a.todo.text}"`;
+    case "save_codex":
+      return `Saved "${a.fields.title}" to the Codex`;
     default:
       return "Unknown change";
   }
@@ -2683,6 +2916,8 @@ async function runResolvedAction(a) {
       return applyTodoUpdate(a.todo, { done: true });
     case "remove_todo":
       return deleteTodo(a.todo.id);
+    case "save_codex":
+      return applyCodexSave(a.fields);
   }
 }
 
@@ -2719,6 +2954,7 @@ const ACTION_FIELD_WHITELIST = {
   update_todo: ["text", "dueDate", "dueTime", "notes", "done"],
   add_toget: ["name", "quantity", "notes", "done"],
   update_toget: ["name", "quantity", "notes", "done"],
+  save_codex: ["title", "body", "sources", "itemName"],
 };
 
 // The field that must survive sanitising for an ADD to mean anything at all.
@@ -2731,6 +2967,7 @@ const ACTION_NAME_FIELDS = {
   add_toget: ["name"],
   add_routine: ["task", "name"],
   add_todo: ["text", "task", "name"],
+  save_codex: ["title"],
 };
 
 // Returns { fields, dropped } — `fields` carrying only real columns for this
@@ -2757,6 +2994,7 @@ const ACTION_SKIP_LABEL = {
   add_todo: "to-do", update_todo: "to-do", complete_todo: "to-do", remove_todo: "to-do",
   add_toget: "to-get item", update_toget: "to-get item", remove_toget: "to-get item",
   attach_photo: "plant photo", set_cover: "cover photo",
+  save_codex: "Codex note",
 };
 
 // "(id 999)" / '("Basil")' / '(id 4, "Basil")' — whatever the model gave us to
@@ -2854,8 +3092,17 @@ async function handleAiActions(actions, setPendingActions, ctx = {}) {
   // nothing in this app can bring it back. So deletions leave the write-mode
   // branch entirely and always go to the confirm queue, "auto" or not.
   // Non-destructive actions follow exactly the logic they always did.
-  const toQueue = confirmMode ? resolved : resolved.filter((r) => isDestructiveAction(r.type));
-  const toApply = confirmMode ? [] : resolved.filter((r) => !isDestructiveAction(r.type));
+  // SAVE_CODEX is the other exception, in the opposite direction: it writes
+  // reference knowledge, not the user's garden records, and the user asked for
+  // researched facts to be bound to the Codex automatically — so it is applied
+  // even in "confirm" mode (it can always be deleted from the Codex screen).
+  const alwaysApply = (r) => r.type === "save_codex";
+  const toQueue = confirmMode
+    ? resolved.filter((r) => !alwaysApply(r))
+    : resolved.filter((r) => isDestructiveAction(r.type));
+  const toApply = confirmMode
+    ? resolved.filter(alwaysApply)
+    : resolved.filter((r) => !isDestructiveAction(r.type));
 
   if (toQueue.length) {
     if (setPendingActions) {

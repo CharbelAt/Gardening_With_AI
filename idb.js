@@ -218,6 +218,11 @@ function addCodexEntry(entry) {
 function getAllCodexEntries() {
   return getAllRecords(STORE_CODEX);
 }
+// Used by SAVE_CODEX (helpers.jsx) to refresh a note in place instead of
+// piling up copies of the same product.
+function updateCodexEntry(entry) {
+  return putRecord(STORE_CODEX, entry);
+}
 function deleteCodexEntry(id) {
   return deleteRecord(STORE_CODEX, id);
 }

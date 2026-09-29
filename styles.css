@@ -3221,3 +3221,143 @@ input, textarea, select, button { font-size: var(--fs-body); }
 .water-strip { display: grid; grid-template-columns: repeat(30, 1fr); gap: 2px; }
 .water-cell { height: 10px; border-radius: 2px; background: var(--surface-2); }
 .water-cell.on { background: var(--info); }
+
+/* ---------- Garden view (Garden tab › Garden): pots on shelves, zen.jsx ---------- */
+.zen-garden { display: flex; flex-direction: column; gap: var(--sp-4); padding: 0 var(--gutter) var(--sp-5); }
+.zen-summary { margin: var(--sp-2) 0 0; font-size: var(--fs-caption); color: var(--text-dim); }
+.zen-note { display: flex; align-items: center; gap: 6px; margin: 0; font-size: var(--fs-caption); color: var(--text-dim); }
+.zen-shelf {
+  position: relative;
+  overflow: hidden;
+  padding: var(--sp-3) var(--sp-3) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+}
+.zen-shelf-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.zen-shelf-count { margin-left: auto; font-weight: 600; }
+.zen-row {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: var(--sp-3) var(--sp-2);
+  align-items: end;
+  padding-bottom: 4px;
+}
+.zen-plank {
+  height: 14px;
+  margin: 0 calc(-1 * var(--sp-3));
+  background: linear-gradient(180deg, #b58a5a, #8d6641);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.25);
+}
+.zen-plant { position: relative; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.zen-plant-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.zen-foliage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 100%;
+  height: 92px;
+  margin-bottom: -8px;
+  transform-origin: 50% 100%;
+  animation: zen-sway 6s ease-in-out infinite;
+  transition: transform 0.6s ease, filter 0.6s ease;
+}
+.zen-foliage.cut { height: 124px; margin-bottom: 0; }
+.zen-cutout { max-width: 100%; max-height: 100%; object-fit: contain; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.18)); }
+.zen-photo {
+  width: 70px;
+  height: 70px;
+  border: 3px solid var(--surface);
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+}
+.zen-glyph { font-size: 3rem; line-height: 1; color: var(--primary-soft); }
+.zen-shadow { width: 70%; height: 8px; margin-top: -4px; border-radius: 50%; background: rgba(0, 0, 0, 0.18); filter: blur(2px); }
+.zen-pot { position: relative; z-index: 2; width: 64px; height: 40px; }
+.zen-pot-shine { fill: none; stroke: rgba(255, 255, 255, 0.28); stroke-width: 3; stroke-linecap: round; }
+.zen-pot.terracotta .zen-pot-body { fill: #c46a3d; } .zen-pot.terracotta .zen-pot-rim { fill: #d67d4e; }
+.zen-pot.sage .zen-pot-body { fill: #7d9a7a; } .zen-pot.sage .zen-pot-rim { fill: #8fae8c; }
+.zen-pot.cream .zen-pot-body { fill: #ddd0b4; } .zen-pot.cream .zen-pot-rim { fill: #eee3cc; }
+.zen-pot.slate .zen-pot-body { fill: #5d6b78; } .zen-pot.slate .zen-pot-rim { fill: #718090; }
+.zen-pot.clay .zen-pot-body { fill: #a8553a; } .zen-pot.clay .zen-pot-rim { fill: #bb6749; }
+.zen-name {
+  max-width: 100%;
+  margin-top: 4px;
+  overflow: hidden;
+  font-size: var(--fs-caption);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zen-plant.thirsty .zen-foliage { animation: none; transform: rotate(7deg) scaleY(0.93); filter: saturate(0.55) brightness(0.97); }
+.zen-plant.watered .zen-foliage { animation: zen-perk 0.7s ease-out; }
+.zen-drop {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--info);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  animation: zen-bob 1.8s ease-in-out infinite;
+}
+.zen-feed {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 0.8rem;
+}
+.zen-splash { position: absolute; top: 26px; left: 50%; z-index: 3; pointer-events: none; }
+.zen-splash i { position: absolute; color: var(--info); font-size: 0.9rem; animation: zen-splash 1.2s ease-out forwards; }
+.zen-splash i:nth-child(1) { --dx: -22px; }
+.zen-splash i:nth-child(2) { --dx: 0px; animation-delay: 0.08s; }
+.zen-splash i:nth-child(3) { --dx: 22px; animation-delay: 0.16s; }
+@keyframes zen-sway { 0%, 100% { transform: rotate(-1.2deg); } 50% { transform: rotate(1.2deg); } }
+@keyframes zen-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@keyframes zen-perk { 0% { transform: rotate(7deg) scaleY(0.93); } 60% { transform: rotate(-2deg) scaleY(1.03); } 100% { transform: none; } }
+@keyframes zen-splash { from { opacity: 1; transform: translate(0, 0); } to { opacity: 0; transform: translate(var(--dx), 34px); } }
+@media (prefers-reduced-motion: reduce) {
+  .zen-foliage, .zen-drop, .zen-splash i, .zen-plant.watered .zen-foliage { animation: none !important; }
+  .zen-foliage { transition: none; }
+}
