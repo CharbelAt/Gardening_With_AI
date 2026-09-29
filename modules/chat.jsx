@@ -389,7 +389,8 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
       const { cleanText, actions } = extractActions(data.reply || "");
       const { cleanText: afterStatus } = extractStatus(cleanText);
       const { cleanText: shownText, followups } = extractFollowups(afterStatus);
-      const res = await handleAiActions(actions, setPendingActions, { chatId }); // act first
+      // photoMsg: lets a plant/tool ADDED from this photo keep the photo.
+      const res = await handleAiActions(actions, setPendingActions, { chatId, photoMsg: userMsg }); // act first
       flashApplied(res);
       const aiMsg = {
         chatId,

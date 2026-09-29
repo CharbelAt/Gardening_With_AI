@@ -181,6 +181,7 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
   const [comparing, setComparing] = useState(false);
   const [form, setForm] = useState(plantFormFrom(plant));
   const [noteDraft, setNoteDraft] = useState(null); // null = journal modal closed
+  const [showCutter, setShowCutter] = useState(false); // the point-at-the-plant cut-out editor (zen.jsx)
   const fileInputRef = useRef(null); // gallery / files
   const cameraInputRef = useRef(null); // forces the camera
 
@@ -238,21 +239,11 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
     });
   }
 
-  // Re-cuts the plant out of its current photo for the Garden view (the
-  // automatic cut can come out ragged on a busy background).
-  async function redoCutout() {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await makePlantCutout(plant);
-      if (result === "unusable") setError("Couldn't separate the plant from this photo's background — it will show as a framed photo. A photo against a plainer background cuts out better.");
-      onChanged();
-    } catch (e) {
-      setError(e.message || "Couldn't make the cutout.");
-    } finally {
-      setBusy(false);
-    }
+  // For a photo the background remover gets wrong (e.g. keeps only the
+  // fruit): show the plain photo in the garden view instead. Reversible.
+  async function toggleCutoutOff() {
+    await updatePlant({ ...plant, cutoutOff: !plant.cutoutOff });
+    onChanged();
   }
 
   // Journal: a dated free-text row in the same history log as photos and
@@ -462,11 +453,17 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
                 onClick: () => setComparing(true),
               },
               { key: "note", icon: "bi-journal-plus", label: "Add journal note", onClick: () => setNoteDraft("") },
-              heroSrc && typeof makePlantCutout === "function" && {
+              heroSrc && typeof CutoutEditor === "function" && {
                 key: "cutout",
                 icon: "bi-scissors",
-                label: "Redo garden cutout",
-                onClick: redoCutout,
+                label: "Cut out plant…",
+                onClick: () => setShowCutter(true),
+              },
+              heroSrc && typeof makePlantCutout === "function" && {
+                key: "cutout-off",
+                icon: plant.cutoutOff ? "bi-scissors" : "bi-image",
+                label: plant.cutoutOff ? "Use a cutout in the garden view" : "Show the photo, not a cutout",
+                onClick: toggleCutoutOff,
               },
               { key: "companions", icon: "bi-people", label: "Good neighbours?", onClick: askCompanions },
               { key: "ask", icon: "bi-chat-dots", label: "Ask Sprout", onClick: askSprout },
@@ -577,6 +574,17 @@ function PlantDetail({ plant, onBack, onChanged, onNavigate }) {
 
       {comparing && (
         <PhotoCompareOverlay plant={plant} photos={photoEntries} onClose={() => setComparing(false)} />
+      )}
+
+      {showCutter && (
+        <CutoutEditor
+          plant={plant}
+          onClose={() => setShowCutter(false)}
+          onSaved={() => {
+            setShowCutter(false);
+            onChanged();
+          }}
+        />
       )}
 
       {noteDraft !== null && (

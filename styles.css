@@ -3288,8 +3288,18 @@ input, textarea, select, button { font-size: var(--fs-body); }
   transition: transform 0.6s ease, filter 0.6s ease;
 }
 .zen-foliage.cut { height: 124px; margin-bottom: 0; }
-.zen-cutout { max-width: 100%; max-height: 100%; object-fit: contain; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.18)); }
+/* Bare-plant cutout in a drawn pot: the stem base tucks behind the rim. */
+.zen-foliage.cutpot { height: 108px; margin-bottom: -12px; }
+/* Phone photos of plants are usually a little dark on a light shelf; a gentle
+   lift (user request) — on the image, so the thirsty fade still applies. */
+.zen-cutout {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  filter: brightness(1.15) saturate(1.08) drop-shadow(0 2px 2px rgba(0, 0, 0, 0.18));
+}
 .zen-photo {
+  filter: brightness(1.12) saturate(1.06);
   width: 70px;
   height: 70px;
   border: 3px solid var(--surface);
@@ -3361,3 +3371,73 @@ input, textarea, select, button { font-size: var(--fs-body); }
   .zen-foliage, .zen-drop, .zen-splash i, .zen-plant.watered .zen-foliage { animation: none !important; }
   .zen-foliage { transition: none; }
 }
+
+/* ---------- Cut-out editor (plant ⋯ › Cut out plant…, zen.jsx CutoutEditor) ---------- */
+.cutter-hint { margin: 0 0 var(--sp-3); font-size: var(--fs-caption); line-height: 1.45; color: var(--text-dim); }
+/* Shrink-wraps the photo, so the box/dot overlay (percentages of the image)
+   lines up exactly with what the user touched. */
+.cutter-stage {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto var(--sp-3);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--surface-2);
+  touch-action: none; /* a drag draws the box instead of scrolling the sheet */
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cutter-stage img { display: block; max-width: 100%; max-height: 55vh; pointer-events: none; }
+.cutter-box {
+  position: absolute;
+  border: 2px dashed #fff;
+  border-radius: 4px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.cutter-dot {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.cutter-dot.add { background: #2e9e4f; }
+.cutter-dot.remove { background: #c0392b; }
+.cutter-busy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: var(--sp-3);
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: var(--fs-caption);
+  text-align: center;
+}
+.cutter-modes { margin: 0 0 var(--sp-3); }
+.cutter-result {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  /* checkerboard, so transparency is visible */
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #e6e6e6 25%, transparent 25%),
+    linear-gradient(-45deg, #e6e6e6 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e6e6e6 75%),
+    linear-gradient(-45deg, transparent 75%, #e6e6e6 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+.cutter-result img { max-width: 100%; max-height: 45vh; filter: brightness(1.15) saturate(1.08); }

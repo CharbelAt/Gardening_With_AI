@@ -1847,7 +1847,9 @@ async function buildChatVisionPrompt(caption, history) {
     "say the photo wasn't uploaded or that you need a URL).\n" +
     'SET_COVER: {"target": "plant"|"tool", "id": <id>} — makes this photo that item\'s cover picture.\n' +
     'ADD_PLANT: {"fields": {"name": "...", "location": "...", "tags": ["..."]}} — ONLY under the ' +
-    '"WHEN IS IT ACTUALLY NEW?" rule above. Never a second copy of a plant already listed.\n' +
+    '"WHEN IS IT ACTUALLY NEW?" rule above. Never a second copy of a plant already listed. A plant ' +
+    "(or tool) you ADD here gets THIS photo automatically as its cover and first gallery picture — " +
+    "don't add ATTACH_PHOTO/SET_COVER for it (it has no id yet), and do tell the user the photo is on it.\n" +
     'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "tags": ["..."]}} — same gate, for a tool ' +
     "or supply they say they just bought.\n" +
     // The photo path used to expose only the six photo-shaped actions, so a
@@ -2294,7 +2296,7 @@ async function applyPlantUpdate(plant, fields) {
 }
 
 async function applyPlantAdd(fields) {
-  await addPlant({
+  const id = await addPlant({
     name: fields.name || "New plant",
     notes: fields.notes || "",
     plantingDate: fields.plantingDate || "",
@@ -2304,10 +2306,11 @@ async function applyPlantAdd(fields) {
     tags: normTags(fields.tags),
   });
   ensureCodexResearch("plant", fields.name); // background — never blocks the add
+  return id;
 }
 
 async function applyToolAdd(fields) {
-  await addTool({
+  const id = await addTool({
     ...fields, // carries brand/condition/location/purchaseDate/price through
     name: fields.name || "New item",
     quantity: Number(fields.quantity) || 1,
@@ -2316,6 +2319,7 @@ async function applyToolAdd(fields) {
     lastUsed: fields.lastUsed ? Date.parse(fields.lastUsed) || null : null,
   });
   ensureCodexResearch("tool", fields.name); // background — never blocks the add
+  return id;
 }
 
 async function applyToolUpdate(tool, fields) {
@@ -2793,7 +2797,7 @@ function describeAction(a) {
     case "noop_duplicate":
       return `Kept "${a.name}" as it is — already in your ${a.where}, and nothing new to save (not added twice)`;
     case "add_plant":
-      return `Add plant "${a.fields.name || "New plant"}"${dup}`;
+      return `Add plant "${a.fields.name || "New plant"}"${a.withPhoto ? " with this photo" : ""}${dup}`;
     case "update_plant":
       return `Update "${a.plant.name}"${dup}: ${fieldsText(a.fields)}`;
     case "remove_plant": {
@@ -2810,7 +2814,7 @@ function describeAction(a) {
       return `Delete the plant "${a.plant.name}"${carries}${also}`;
     }
     case "add_tool":
-      return `Add "${a.fields.name || "New item"}" (x${a.fields.quantity || 1}) to inventory${dup}`;
+      return `Add "${a.fields.name || "New item"}" (x${a.fields.quantity || 1}) to inventory${a.withPhoto ? " with this photo" : ""}${dup}`;
     case "update_tool":
       return `Update "${a.tool.name}"${dup}: ${fieldsText(a.fields)}`;
     case "remove_tool":
@@ -2878,14 +2882,26 @@ async function runResolvedAction(a) {
     // through resolve/describe so the user is told it was recognised, not lost.
     case "noop_duplicate":
       return;
-    case "add_plant":
-      return applyPlantAdd(a.fields);
+    case "add_plant": {
+      const id = await applyPlantAdd(a.fields);
+      if (a.withPhoto) {
+        const created = (await getAllPlants()).find((p) => p.id === id);
+        if (created) await applySetCover("plant", created, a.withPhoto);
+      }
+      return id;
+    }
     case "update_plant":
       return applyPlantUpdate(a.plant, a.fields);
     case "remove_plant":
       return applyPlantRemove(a.plant);
-    case "add_tool":
-      return applyToolAdd(a.fields);
+    case "add_tool": {
+      const id = await applyToolAdd(a.fields);
+      if (a.withPhoto) {
+        const created = (await getAllTools()).find((t) => t.id === id);
+        if (created) await applySetCover("tool", created, a.withPhoto);
+      }
+      return id;
+    }
     case "update_tool":
       return applyToolUpdate(a.tool, a.fields);
     case "remove_tool":
@@ -3082,6 +3098,22 @@ async function handleAiActions(actions, setPendingActions, ctx = {}) {
     );
   }
   if (!resolved.length) return result;
+
+  // ---- a photo sent with "add this to my garden" ----
+  // ATTACH_PHOTO/SET_COVER need an id, and a plant CREATED in this same reply
+  // has none yet — so the plant was saved and the photo silently dropped
+  // (user report, 2026-09-29). The photo path now passes the photo in ctx,
+  // and a genuinely new plant/tool from it carries the photo along (cover +
+  // gallery), unless the model already aimed a photo action somewhere itself.
+  // Rides on the resolved action, so confirm mode attaches it on confirmation.
+  if (ctx && ctx.photoMsg && ctx.photoMsg.imageThumb) {
+    const photoHandled = resolved.some((r) => r.type === "attach_photo" || r.type === "set_cover");
+    if (!photoHandled) {
+      for (const r of resolved) {
+        if (r.type === "add_plant" || r.type === "add_tool") r.withPhoto = ctx.photoMsg;
+      }
+    }
+  }
 
   // ---- the destructive split (user: "with confirmation of course") ----
   //
