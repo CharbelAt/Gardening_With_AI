@@ -247,6 +247,10 @@ const PROMPT_ADVICE =
   "plants, indoors or outdoors). Otherwise give your best answer and label it as an estimate. For " +
   "an uncertain diagnosis or ID, say how sure you are in a few words, then still give the most likely " +
   "answer and what to do about it; in a reply that only asks a question, emit no action lines.\n" +
+  "- NOT IN THE SAVED INFO? For a product question the saved label/instructions don't answer, " +
+  "search the manufacturer's own site or official documents (product page, label PDF, safety data " +
+  "sheet, registration) and put the source link in your answer, e.g. \"(source: [maker.com](https://…))\". " +
+  "Never present a looked-up number without its source.\n" +
   "- REMEMBER WHAT YOU LEARN: after researching or working out facts the user will need again (what " +
   "a product is, active ingredient, rates, how to apply), save them — SAVE_CODEX with a compact " +
   "reference and, for an item in their inventory, UPDATE_TOOL its \"brand\"/\"productInfo\" as well — " +
@@ -576,13 +580,161 @@ function ensureCodexResearch(kind, name) {
   processCodexQueue(); // fire-and-forget
 }
 
+// ---------- product instructions researched FROM THE LABEL ----------
+//
+// User, 2026-09-29: "make sure it also researches and saves product
+// instructions when it has the label". Leaving that to the chat model was
+// unreliable (live: it read a fertilizer label, then asked for a close-up of
+// the small print and saved nothing). So whenever a product gets a label
+// reading (Inventory photo, a chat photo, or the model writing productInfo),
+// a background job identifies the exact product from the label, looks up the
+// manufacturer's instructions (the research chain offers web search), and
+// saves a structured instruction sheet with sources to the Codex. Sprout sees
+// that sheet next to the label in its WHAT YOU ALREADY KNOW block.
+//
+// `labelKey` (a fingerprint of the label text it was researched from) stops a
+// re-run for the same label and triggers one when a new photo changes it.
+const PRODUCT_RESEARCH_SYSTEM =
+  "You are a garden-product reference assistant. You are given one product from the user's " +
+  "inventory and its label AS READ FROM THEIR PHOTO (it may be partial, blurry or in another " +
+  "language). First identify the exact product: brand, product name, active ingredient(s) and " +
+  "concentration, formulation. Then look up the manufacturer's label or instructions with web " +
+  "search (search the brand + product name, or the active ingredient + concentration) and write " +
+  "a compact instruction sheet in markdown, one bold heading per line followed by the facts:\n" +
+  "**What it is** · **Active ingredient** · **How to mix** (give numbers per 1 L, per 5 L sprayer " +
+  "and per 100 L) · **How to apply** (method, timing, interval, max applications) · **For** " +
+  "(crops/plants and pests/uses) · **Wait before harvest** (pre-harvest interval) · **Safety** " +
+  "(protective gear, what not to mix it with, bees/pets/fish) · **Storage**.\n" +
+  "Prefer the numbers printed on the user's label; fill the rest from the manufacturer or an " +
+  "official registration. Mark each number's origin in a few words (\"label\", \"manufacturer " +
+  "site\", \"typical for this active ingredient\"). If a value is found nowhere, write \"not " +
+  "found\" — never invent a dose. Home gardener scale; no preamble. After the sheet, on its own " +
+  "final line: SOURCES: <1-4 real URLs you used, comma separated> — or SOURCES: none.";
+
+// Short, stable fingerprint of a text (djb2 + length) — only for "did the
+// label change since it was researched?", never for security.
+function textFingerprint(text) {
+  const t = String(text || "");
+  let h = 5381;
+  for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0;
+  return `${t.length}:${(h >>> 0).toString(36)}`;
+}
+
+function codexEntryForItem(entries, name) {
+  const norm = (x) => String(x || "").trim().toLowerCase();
+  return entries.find((e) => norm(e.itemName) === norm(name)) || entries.find((e) => norm(e.title) === norm(name)) || null;
+}
+
+// productInfo = the label reading, optionally followed by the researched
+// instruction sheet under this marker (user: "have it added there" — the
+// Product info section under Details). The fingerprint is taken from the
+// LABEL part only, so writing the research back never re-triggers research.
+const PRODUCT_RESEARCH_MARKER = "\n\n---\n#### Instructions (researched";
+function splitProductInfo(text) {
+  const t = String(text || "");
+  const i = t.indexOf(PRODUCT_RESEARCH_MARKER);
+  return i === -1 ? { label: t, researched: "" } : { label: t.slice(0, i), researched: t.slice(i) };
+}
+function labelKeyOf(tool) {
+  return textFingerprint(splitProductInfo(tool && tool.productInfo).label.trim());
+}
+
+// True when this product's CURRENT label still needs researching.
+function labelResearchNeeded(tool, entries) {
+  if (!hasProductInfo(tool) || !tool.name) return false;
+  const { researched } = splitProductInfo(tool.productInfo);
+  // The sheet belongs on the product (Details › Product info) whatever the
+  // Codex holds; a Codex note Sprout saved itself is only protected from
+  // being overwritten (see researchProductFromLabel), not a reason to skip.
+  const entry = codexEntryForItem(entries, tool.name);
+  if (entry && entry.labelKey) return entry.labelKey !== labelKeyOf(tool) || !researched;
+  return !researched;
+}
+
+// Queues label research for one product (deduped; runs through the same
+// throttled queue as the rest of the Codex). A still-pending name-only job for
+// the same item is dropped — the label job supersedes it.
+function ensureLabelResearch(toolId) {
+  const key = `label:${toolId}`;
+  if (codexInFlight.has(key)) return;
+  codexInFlight.add(key);
+  codexQueue.push({ kind: "label", toolId });
+  processCodexQueue(); // fire-and-forget
+}
+
+async function researchProductFromLabel(toolId) {
+  const key = `label:${toolId}`;
+  try {
+    const tool = (await getAllTools()).find((t) => t.id === toolId);
+    if (!tool) return;
+    const entries = await getAllCodexEntries();
+    if (!labelResearchNeeded(tool, entries)) return;
+    const labelKey = labelKeyOf(tool);
+    const labelText = splitProductInfo(tool.productInfo).label.trim();
+    const facts = [
+      `Product in the user's inventory: "${tool.name}"`,
+      tool.brand ? `Brand: ${tool.brand}` : "",
+      `Label as read from their photo:\n${labelText.slice(0, 3000)}`,
+      tool.notes ? `User's notes: ${String(tool.notes).slice(0, 300)}` : "",
+    ].filter(Boolean);
+    const data = await apiFetch("/api/chat", {
+      mode: "research",
+      messages: [
+        { role: "system", content: PRODUCT_RESEARCH_SYSTEM },
+        { role: "user", content: facts.join("\n") },
+      ],
+    });
+    const extracted = extractSources(data.reply || "");
+    // Drop a chatty opener ("I'll research this product.") — seen live; the
+    // sheet is stored on the product, where it must start with the facts.
+    const body = extracted.body.replace(/^(?:\s*(?:I['’]ll|I will|Let me|Sure|Okay|OK|Here(?:['’]s| is))\b[^\n]*\n+)+/i, "").trim();
+    const sources = extracted.sources;
+    if (!body) return;
+    // Re-read: the label may have changed, or the model saved its own note,
+    // while the research was running.
+    const fresh = (await getAllTools()).find((t) => t.id === toolId);
+    if (!fresh || labelKeyOf(fresh) !== labelKey) return;
+    // 1) Onto the product itself — Details › Product info, under the label.
+    const day = new Date().toISOString().slice(0, 10);
+    const links = sources.length ? `\n\nSources: ${sources.map((u) => `[${u.replace(/^https?:\/\/(www\.)?/, "").split("/")[0]}](${u})`).join(" · ")}` : "";
+    await updateTool({
+      ...fresh,
+      productInfo: `${splitProductInfo(fresh.productInfo).label.trim()}${PRODUCT_RESEARCH_MARKER} ${day})\n\n${body}${links}`,
+    });
+    // 2) And the Codex, unless the chat model already saved its own note.
+    const existing = codexEntryForItem(await getAllCodexEntries(), fresh.name);
+    if (existing && existing.auto === false && !existing.labelKey) {
+      bumpContextRevision();
+      return;
+    }
+    const record = {
+      title: fresh.name,
+      itemName: fresh.name,
+      body,
+      sources,
+      kind: "tool",
+      auto: true,
+      labelKey,
+      researchedAt: Date.now(),
+    };
+    if (existing) await updateCodexEntry({ ...existing, ...record });
+    else await addCodexEntry(record);
+    bumpContextRevision();
+  } catch (e) {
+    console.error("label research failed:", e && e.message);
+  } finally {
+    codexInFlight.delete(key);
+  }
+}
+
 async function processCodexQueue() {
   if (codexQueueRunning) return;
   codexQueueRunning = true;
   try {
     while (codexQueue.length > 0) {
       const job = codexQueue.shift();
-      await researchCodexItem(job.kind, job.name);
+      if (job.kind === "label") await researchProductFromLabel(job.toolId);
+      else await researchCodexItem(job.kind, job.name);
       if (codexQueue.length > 0) {
         await new Promise((r) => setTimeout(r, CODEX_RESEARCH_GAP_MS));
       }
@@ -595,6 +747,15 @@ async function processCodexQueue() {
 async function researchCodexItem(kind, clean) {
   const norm = clean.toLowerCase();
   try {
+    if (kind !== "plant") {
+      const labelled = (await getAllTools()).find(
+        (t) => (t.name || "").trim().toLowerCase() === norm && hasProductInfo(t)
+      );
+      if (labelled) {
+        ensureLabelResearch(labelled.id); // the label says far more than the name
+        return;
+      }
+    }
     const existing = await getAllCodexEntries();
     if (existing.some((e) => (e.itemName || e.title || "").trim().toLowerCase() === norm)) return;
     // A product name alone is often ambiguous ("Ticket", "Alpha Plus" are
@@ -651,7 +812,11 @@ async function syncCodexEntries(maxNew = 3) {
     for (const item of missing.slice(0, maxNew)) {
       ensureCodexResearch(item.kind, item.name); // enqueued, spaced 20s apart
     }
-    return missing.length;
+    // Products whose label was never researched (or changed since): queued
+    // the same way, a few per sweep.
+    const unresearched = tools.filter((t) => labelResearchNeeded(t, entries));
+    for (const t of unresearched.slice(0, maxNew)) ensureLabelResearch(t.id);
+    return missing.length + unresearched.length;
   } catch (e) {
     console.error("codex sync failed:", e.message);
     return 0;
@@ -1158,7 +1323,7 @@ async function buildEntityHints(text) {
 // armory" can actually be answered.
 const REFERENCE_CARE_RE =
   /\b(spray\w*|dos(e|es|age|ing)|dilut\w*|mix(ing)?|rates?|pests?|mites?|aphids?|whitefl\w*|fung\w*|mildew|mold|mould|insect\w*|fertili[sz]\w*|feed(ing)?|treat\w*|armou?ry|inventory|products?|bottle|label|ml|litres?|liters?|how much)\b/i;
-const REFERENCE_BLOCK_MAX_CHARS = 7000;
+const REFERENCE_BLOCK_MAX_CHARS = 12000; // ~3k tokens: room for a few products with full instruction sheets
 const REFERENCE_ITEM_MAX_CHARS = 1400;
 
 async function buildReferenceBlock(history) {
@@ -1194,10 +1359,15 @@ async function buildReferenceBlock(history) {
     const usedCodex = new Set();
     for (const t of pickedTools) {
       const lines = [`INVENTORY id:${t.id} "${t.name}"${t.brand ? ` — brand: ${t.brand}` : ""}`];
-      if (hasProductInfo(t)) lines.push(`  saved label reading: ${clipForPrompt(t.productInfo, REFERENCE_ITEM_MAX_CHARS)}`);
+      const info = splitProductInfo(t.productInfo);
+      if (hasProductInfo(t)) lines.push(`  product info (label reading): ${clipForPrompt(info.label, REFERENCE_ITEM_MAX_CHARS)}`);
+      if (info.researched) lines.push(`  researched instructions: ${clipForPrompt(info.researched, REFERENCE_ITEM_MAX_CHARS * 2)}`);
       if (t.notes) lines.push(`  notes: ${clipForPrompt(t.notes, 300)}`);
       const c = codexFor(t.name);
-      if (c) {
+      // The researched sheet is already on the product — don't send it twice
+      // (and mark it used so it isn't listed again as a Codex entry below).
+      if (c && info.researched && c.labelKey) usedCodex.add(c.id);
+      else if (c) {
         usedCodex.add(c.id);
         lines.push(`  Codex: ${clipForPrompt(c.body, REFERENCE_ITEM_MAX_CHARS)}`);
       }
@@ -1286,7 +1456,9 @@ const ACTION_CONVENTIONS =
   '"I\'ve added it" without an action line saves NOTHING — if you claim a change, you MUST emit ' +
   "the matching line(s).\n" +
   "An action line is one single line — the keyword, a colon, then its complete JSON on that " +
-  "same line — placed at the very end of your reply, after your visible text. Emit SEVERAL " +
+  "same line — placed at the very end of your reply, after your visible text. The format is " +
+  "exactly KEYWORD: {json} — e.g. UPDATE_PLANT: {\"id\": 4, \"fields\": {...}} — never a JSON bundle " +
+  "like {\"actions\": [{\"type\": \"UPDATE_PLANT\", ...}]} and never inside a code block. Emit SEVERAL " +
   "action lines (one per line) when the user mentions several changes in one message. The app " +
   "strips these lines before display; the user never sees them, so never mention or explain them.\n" +
   // The other half of the duplicate problem: not "wrong record" but "record
@@ -1831,12 +2003,16 @@ async function buildChatVisionPrompt(caption, history) {
     "IF YOU CANNOT TELL WHICH ITEM IT IS, ASK — one short question, and emit no action line at " +
     'all: "Is this the balcony basil or the kitchen one?" Guessing files the photo, or a whole ' +
     "new record, against the wrong item and the user has to undo it. Asking costs one message.\n" +
-    'WHEN IS IT ACTUALLY NEW? Only when the user\'s message says so — "new", "just planted", ' +
-    '"just bought", "picked this up today", "adding this one" — or when nothing in the lists ' +
-    "above plausibly matches it. A photo on its own is NEVER evidence that something is new: the " +
-    "usual reason someone photographs a plant is that they already have it.\n" +
+    'WHEN IS IT ACTUALLY NEW? When the user\'s message says so — "add this", "add it to my ' +
+    'garden/inventory", "new", "just planted", "just bought", "picked this up today" — or when ' +
+    "nothing in the lists above plausibly matches it. \"Add this\" means ADD it: never repurpose a " +
+    "different existing record (an oddly named or empty one included) for it. A photo with NO such " +
+    "words is not evidence that something is new: the usual reason someone photographs a plant is " +
+    "that they already have it.\n" +
     "ACTION LINES (hidden — JSON on one single line at the very end of your reply, never mentioned " +
-    "in your visible text). This app has EXACTLY these places to save things, and no others:\n" +
+    "in your visible text). Format: KEYWORD: {json}, one per line — never a JSON bundle like " +
+    "{\"actions\": [...]}, never in a code block. This app has EXACTLY these places to save things, " +
+    "and no others:\n" +
     'UPDATE_PLANT: {"id": <id from the list above>, "fields": {"notes": "...", "location": "...", "tags": ["..."]}}\n' +
     "  ← THE DEFAULT when the photo shows a plant they already have. \"notes\" REPLACES the old " +
     "notes, so repeat what's there and append what the photo tells you.\n" +
@@ -1850,8 +2026,9 @@ async function buildChatVisionPrompt(caption, history) {
     '"WHEN IS IT ACTUALLY NEW?" rule above. Never a second copy of a plant already listed. A plant ' +
     "(or tool) you ADD here gets THIS photo automatically as its cover and first gallery picture — " +
     "don't add ATTACH_PHOTO/SET_COVER for it (it has no id yet), and do tell the user the photo is on it.\n" +
-    'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "tags": ["..."]}} — same gate, for a tool ' +
-    "or supply they say they just bought.\n" +
+    'ADD_TOOL: {"fields": {"name": "...", "quantity": 1, "brand": "...", "tags": ["..."]}} — same gate, for a ' +
+    "tool or supply they say they just bought or ask you to add. Your reading of the label in this " +
+    "reply is saved on it as its product info automatically.\n" +
     // The photo path used to expose only the six photo-shaped actions, so a
     // message like "remind me to repot this next week" sent WITH a picture had
     // no way to create the to-do — the request was silently half-served. The
@@ -2086,6 +2263,11 @@ function extractActions(text) {
   for (let i = spans.length - 1; i >= 0; i--) {
     src = src.slice(0, spans[i][0]) + src.slice(spans[i][1]);
   }
+  // Format drift: the same actions written as a JSON bundle (see
+  // extractJsonBundleActions). Runs on what the keyword pass left.
+  const bundled = extractJsonBundleActions(src);
+  src = bundled.text;
+  actions.push(...bundled.actions.slice(0, Math.max(0, 12 - actions.length)));
   // Second pass, over what the real verbs left behind: action lines for
   // modules that don't exist (see UNKNOWN_ACTION_START_RE). These were never
   // applied — they just have to stop being shown to the user as if they were.
@@ -2120,6 +2302,154 @@ function extractActions(text) {
   // actions } and simply ignores it. It exists so a UI can eventually say
   // "Sprout tried to use a module this app doesn't have" instead of nothing.
   return { cleanText, actions, unknownVerbs };
+}
+
+// ---------- JSON-bundle actions (format drift) ----------
+//
+// Seen live (2026-09-29, Space Bunny, photo + "add this to my garden"): instead
+// of `UPDATE_PLANT: {...}` lines the model wrote ONE JSON blob —
+//   {"plantId": 1, "actions": [{"type": "UPDATE_PLANT", "id": 1, "fields": {...}},
+//                              {"type": "ATTACH_PHOTO", "plantId": 1}]}
+// The keyword scanner can't see that shape, so NOTHING was saved, the raw JSON
+// was shown to the user, and the reply still said "the photo is saved". The
+// prompt now forbids the shape; this parses it anyway, because a save the
+// model clearly meant must not depend on it following a format rule.
+//
+// Only JSON that starts a line (after the usual decorations) is considered,
+// and only items whose "type" is one of the app's real keywords count — so
+// JSON in ordinary prose, or with unknown types, is left alone.
+const BUNDLE_START_RE = /(?:^|\n)[ \t>*`-]*(?:json)?[ \t]*\n?[ \t]*([\[{])/g;
+// Keys that aim an action at a record rather than describing its content.
+const BUNDLE_TARGET_KEYS = ["id", "plantId", "photoId", "target", "plantName"];
+
+function scanJsonArray(src, start) {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < src.length; i++) {
+    const c = src[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === "[" || c === "{") depth++;
+    else if (c === "]" || c === "}") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+function normalizeBundleItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  const keyword = String(item.type || item.action || "").trim().toUpperCase();
+  const type = ACTION_TYPE_MAP[keyword];
+  if (!type) return null;
+  const rest = { ...item };
+  delete rest.type;
+  delete rest.action;
+  if (rest.fields && typeof rest.fields === "object") return { type, ...rest };
+  // Fields written flat on the item ({"type": "ADD_PLANT", "name": "Tomato"}):
+  // everything that isn't a target key is content.
+  const isAdd = type === "add" || type.indexOf("add_") === 0 || type === "save_codex";
+  const out = { type };
+  const fields = {};
+  for (const [k, v] of Object.entries(rest)) {
+    if (!isAdd && (BUNDLE_TARGET_KEYS.includes(k) || k === "name")) out[k] = v;
+    else if (isAdd && BUNDLE_TARGET_KEYS.includes(k)) out[k] = v;
+    else fields[k] = v;
+  }
+  if (Object.keys(fields).length) out.fields = fields;
+  return out;
+}
+
+// Returns { text, actions } with every recognised bundle removed from text.
+function extractJsonBundleActions(text) {
+  let src = text || "";
+  const found = [];
+  const spans = [];
+  BUNDLE_START_RE.lastIndex = 0;
+  let m;
+  while ((m = BUNDLE_START_RE.exec(src)) !== null && found.length < 12) {
+    const openIdx = m.index + m[0].length - 1;
+    const end = src[openIdx] === "{" ? scanJsonObject(src, openIdx) : scanJsonArray(src, openIdx);
+    if (end === -1) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(src.slice(openIdx, end));
+    } catch (_) {
+      continue;
+    }
+    const items = Array.isArray(parsed)
+      ? parsed
+      : parsed && Array.isArray(parsed.actions)
+        ? parsed.actions
+        : [parsed];
+    const actions = items.map(normalizeBundleItem).filter(Boolean);
+    if (!actions.length) continue;
+    found.push(...actions);
+    let stripEnd = end;
+    // Also swallow a closing code fence on the next line, if the bundle was
+    // fenced — otherwise a lone ``` would be left in the visible reply.
+    const tail = src.slice(end).match(/^[ \t]*(?:\n[ \t]*```)?[ \t]*`{0,3}\**/);
+    if (tail) stripEnd += tail[0].length;
+    spans.push([m.index + (src[m.index] === "\n" ? 1 : 0), stripEnd]);
+    BUNDLE_START_RE.lastIndex = end;
+  }
+  for (let i = spans.length - 1; i >= 0; i--) src = src.slice(0, spans[i][0]) + src.slice(spans[i][1]);
+  return { text: src, actions: found.slice(0, 12) };
+}
+
+// ---------- a claimed change with no action line: ask for the line ----------
+//
+// Seen live (2026-09-29, Space Bunny, photo + "add this to my garden"): "I've
+// added this photo to the tomato's gallery" — and no action line at all, so
+// nothing was saved. The user only finds out later ("there are no pictures
+// until I remind it"). When a reply CLAIMS a change and carries no action, the
+// app now asks once, in the cheap command mode, for exactly the missing
+// line(s), and applies them. A false alarm costs one short call that returns
+// nothing.
+const UNBACKED_CLAIM_RE =
+  /\bI(?:['’]ve|\s+have|['’]ll|\s+will)?\s+(?:also\s+|now\s+|just\s+|gone ahead and\s+)?(added|saved|put|attached|stored|filed|logged|updated|set|created|moved|renamed|marked|ticked|checked off|recorded|noted|removed|deleted)\b/i;
+
+function claimsAChange(text) {
+  return UNBACKED_CLAIM_RE.test(text || "");
+}
+
+const REPAIR_NUDGE =
+  "Your previous reply (the last assistant message above) told the user you changed something in " +
+  "the app — but it contained NO action line, so NOTHING was saved. Emit ONLY the action line(s) " +
+  "that make that reply true, exactly per the formulas (for a photo the user sent, ATTACH_PHOTO or " +
+  "SET_COVER with its photoId from \"[shared photo #N]\"; for something new, ADD_*), then " +
+  "STATUS: done. No visible text at all. If the reply claimed nothing that the app can save, " +
+  "emit only STATUS: done.";
+
+// history: the thread up to and including the user's message; replyText: the
+// reply as shown. Returns a handleAiActions result, or null when there was
+// nothing to repair. Throws on network errors (the caller logs them).
+async function repairUnbackedClaim({ history, replyText, actions, ctx, setPendingActions }) {
+  if ((actions && actions.length) || !claimsAChange(replyText)) return null;
+  const msgs = await buildContextMessages(
+    [...(history || []), { role: "assistant", kind: "text", text: replyText, createdAt: Date.now() }],
+    "act"
+  );
+  msgs.push({ role: "system", content: REPAIR_NUDGE });
+  const data = await apiFetch("/api/chat", { mode: "act", messages: msgs });
+  const { actions: fixed } = extractActions(data.reply || "");
+  if (!fixed.length) return null;
+  return handleAiActions(fixed, setPendingActions, ctx);
+}
+
+// Two handleAiActions results as one, for a single "applied" flash.
+function mergeActionResults(a, b) {
+  if (!b) return a;
+  return {
+    applied: [...(a.applied || []), ...(b.applied || [])],
+    queued: (a.queued || 0) + (b.queued || 0),
+    skipped: [...(a.skipped || []), ...(b.skipped || [])],
+  };
 }
 
 // Back-compat single-action wrapper (kept in case any older code path calls it).
@@ -2399,6 +2729,35 @@ async function applySetCover(kindName, item, photoMsg) {
   }
 }
 
+// A product photographed in chat: Sprout's reading of it (type, active
+// ingredient, dosage, safety) becomes the item's productInfo — the same thing
+// the Inventory's own "Add photo" stores — unless the item already has a real
+// label reading, which is never overwritten.
+const PHOTO_READING_MAX_CHARS = 4000;
+async function keepPhotoReadingAsProductInfo(toolId, reading) {
+  const text = String(reading || "").trim();
+  if (!text) return;
+  const tool = (await getAllTools()).find((t) => t.id === toolId);
+  if (!tool || hasProductInfo(tool)) return;
+  await updateTool({ ...tool, productInfo: text.slice(0, PHOTO_READING_MAX_CHARS) });
+  ensureLabelResearch(toolId);
+}
+
+// A chat photo onto a plant/tool that already exists: a plant gets it in its
+// gallery (and as its cover if it has none yet); a tool gets it as its
+// picture only if it has none — an existing product photo is never replaced.
+async function attachPhotoToExisting(kind, id, photoMsg) {
+  if (kind === "plant") {
+    const plant = (await getAllPlants()).find((p) => p.id === id);
+    if (!plant) return;
+    if (plant.coverThumb) await applyAttachPhoto(plant, photoMsg);
+    else await applySetCover("plant", plant, photoMsg);
+  } else if (kind === "tool") {
+    const tool = (await getAllTools()).find((t) => t.id === id);
+    if (tool && !tool.photoThumb) await applySetCover("tool", tool, photoMsg);
+  }
+}
+
 async function applyShoppingAdd(fields) {
   await addShoppingItem({
     name: fields.name || "New item",
@@ -2643,7 +3002,9 @@ async function guardDuplicateAdd(type, fields) {
 
   const merge = buildMergeFields(existing, fields, spec.mergeable);
   if (!Object.keys(merge).length) {
-    return { type: "noop_duplicate", name: existing[spec.nameKey] || label, where: spec.where };
+    // itemKey/item: lets a photo sent with "add this" still land on the
+    // record the add turned out to be (handleAiActions).
+    return { type: "noop_duplicate", name: existing[spec.nameKey] || label, where: spec.where, itemKey: spec.itemKey, item: existing };
   }
   return {
     type: spec.updateType,
@@ -2795,11 +3156,13 @@ function describeAction(a) {
   // the only irreversible thing in the app.
   switch (a.type) {
     case "noop_duplicate":
-      return `Kept "${a.name}" as it is — already in your ${a.where}, and nothing new to save (not added twice)`;
+      return a.withPhoto
+        ? `"${a.name}" is already in your ${a.where} — added this photo to it (not added twice)`
+        : `Kept "${a.name}" as it is — already in your ${a.where}, and nothing new to save (not added twice)`;
     case "add_plant":
       return `Add plant "${a.fields.name || "New plant"}"${a.withPhoto ? " with this photo" : ""}${dup}`;
     case "update_plant":
-      return `Update "${a.plant.name}"${dup}: ${fieldsText(a.fields)}`;
+      return `Update "${a.plant.name}"${dup}: ${fieldsText(a.fields)}${a.withPhoto ? " + this photo" : ""}`;
     case "remove_plant": {
       const history = (a.plant.photoHistory || []).length;
       const carries = history
@@ -2816,7 +3179,7 @@ function describeAction(a) {
     case "add_tool":
       return `Add "${a.fields.name || "New item"}" (x${a.fields.quantity || 1}) to inventory${a.withPhoto ? " with this photo" : ""}${dup}`;
     case "update_tool":
-      return `Update "${a.tool.name}"${dup}: ${fieldsText(a.fields)}`;
+      return `Update "${a.tool.name}"${dup}: ${fieldsText(a.fields)}${a.withPhoto ? " + this photo" : ""}`;
     case "remove_tool":
       return `Delete "${a.tool.name}" from your inventory`;
     case "add_routine":
@@ -2881,6 +3244,7 @@ async function runResolvedAction(a) {
     // A duplicate ADD the guard dropped: nothing to write, but it still flows
     // through resolve/describe so the user is told it was recognised, not lost.
     case "noop_duplicate":
+      if (a.withPhoto && a.item) await attachPhotoToExisting(a.itemKey, a.item.id, a.withPhoto);
       return;
     case "add_plant": {
       const id = await applyPlantAdd(a.fields);
@@ -2891,7 +3255,9 @@ async function runResolvedAction(a) {
       return id;
     }
     case "update_plant":
-      return applyPlantUpdate(a.plant, a.fields);
+      await applyPlantUpdate(a.plant, a.fields);
+      if (a.withPhoto) await attachPhotoToExisting("plant", a.plant.id, a.withPhoto);
+      return;
     case "remove_plant":
       return applyPlantRemove(a.plant);
     case "add_tool": {
@@ -2899,11 +3265,19 @@ async function runResolvedAction(a) {
       if (a.withPhoto) {
         const created = (await getAllTools()).find((t) => t.id === id);
         if (created) await applySetCover("tool", created, a.withPhoto);
+        await keepPhotoReadingAsProductInfo(id, a.photoReply);
       }
       return id;
     }
     case "update_tool":
-      return applyToolUpdate(a.tool, a.fields);
+      await applyToolUpdate(a.tool, a.fields);
+      // The model wrote (or rewrote) the product's label info → research it.
+      if (a.fields && a.fields.productInfo) ensureLabelResearch(a.tool.id);
+      if (a.withPhoto) {
+        await attachPhotoToExisting("tool", a.tool.id, a.withPhoto);
+        await keepPhotoReadingAsProductInfo(a.tool.id, a.photoReply);
+      }
+      return;
     case "remove_tool":
       return applyToolRemove(a.tool);
     case "add_routine":
@@ -3106,11 +3480,32 @@ async function handleAiActions(actions, setPendingActions, ctx = {}) {
   // and a genuinely new plant/tool from it carries the photo along (cover +
   // gallery), unless the model already aimed a photo action somewhere itself.
   // Rides on the resolved action, so confirm mode attaches it on confirmation.
+  //
+  // Extended (user, 2026-09-29: "it says skipped when adding, and there is no
+  // picture until I remind it"): the photo also lands when the add turned out
+  // to be a plant/tool they ALREADY have (duplicate guard → update or "already
+  // there"), and when the reply updates exactly one plant or tool without a
+  // photo action. Photo actions the model aimed at an id that doesn't exist
+  // (the new record has none yet) are dropped silently when this covers them.
   if (ctx && ctx.photoMsg && ctx.photoMsg.imageThumb) {
     const photoHandled = resolved.some((r) => r.type === "attach_photo" || r.type === "set_cover");
     if (!photoHandled) {
-      for (const r of resolved) {
-        if (r.type === "add_plant" || r.type === "add_tool") r.withPhoto = ctx.photoMsg;
+      const itemOf = (r) =>
+        r.type === "update_plant" ? r.plant
+          : r.type === "update_tool" ? r.tool
+            : r.type === "noop_duplicate" && (r.itemKey === "plant" || r.itemKey === "tool") ? r.item
+              : null;
+      const adds = resolved.filter((r) => r.type === "add_plant" || r.type === "add_tool");
+      const touched = resolved.filter((r) => itemOf(r));
+      const targets = adds.length ? adds : touched.length === 1 ? touched : touched.filter((r) => r.dedupNote || r.type === "noop_duplicate");
+      for (const r of targets) {
+        r.withPhoto = ctx.photoMsg;
+        // What Sprout said about the photo — for a product, that IS its label
+        // reading, and it would otherwise only live in the chat bubble.
+        if (ctx.photoReply) r.photoReply = ctx.photoReply;
+      }
+      if (targets.length) {
+        result.skipped = result.skipped.filter((msg) => !/plant photo change|cover photo change/.test(msg));
       }
     }
   }

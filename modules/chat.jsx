@@ -260,7 +260,16 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
         const { cleanText: shownText, followups } = extractFollowups(afterStatus);
         // Apply the AI's changes FIRST, then show its reply — by the time the
         // user reads "added!", the item is already in the module.
-        const res = await handleAiActions(actions, setPendingActions, { chatId });
+        let res = await handleAiActions(actions, setPendingActions, { chatId });
+        // Said "I've added it" with no action line → ask for the line once.
+        try {
+          res = mergeActionResults(
+            res,
+            await repairUnbackedClaim({ history, replyText: shownText, actions, ctx: { chatId }, setPendingActions })
+          );
+        } catch (e) {
+          console.error("repair of an unsaved claim failed:", e && e.message);
+        }
         flashApplied(res);
         const aiMsg = {
           chatId,
@@ -390,7 +399,22 @@ function ChatTab({ chatId, messages, setMessages, busy, setBusy, draft, onDraftC
       const { cleanText: afterStatus } = extractStatus(cleanText);
       const { cleanText: shownText, followups } = extractFollowups(afterStatus);
       // photoMsg: lets a plant/tool ADDED from this photo keep the photo.
-      const res = await handleAiActions(actions, setPendingActions, { chatId, photoMsg: userMsg }); // act first
+      let res = await handleAiActions(actions, setPendingActions, { chatId, photoMsg: userMsg, photoReply: shownText }); // act first
+      // Said "I've added the photo" with no action line → ask for the line once.
+      try {
+        res = mergeActionResults(
+          res,
+          await repairUnbackedClaim({
+            history: [...messages, userMsg],
+            replyText: shownText,
+            actions,
+            ctx: { chatId, photoMsg: userMsg, photoReply: shownText },
+            setPendingActions,
+          })
+        );
+      } catch (e) {
+        console.error("repair of an unsaved claim failed:", e && e.message);
+      }
       flashApplied(res);
       const aiMsg = {
         chatId,

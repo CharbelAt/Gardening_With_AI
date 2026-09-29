@@ -3,7 +3,7 @@
 // this app is actively being updated — you always want the latest app.jsx
 // over a stale cached copy. The cache is only a fallback for when there's no
 // network at all. AI calls and CDN scripts always go straight to the network.
-const CACHE = "garden-companion-v30"; // v30: point-at-the-plant cut-out editor (SAM)
+const CACHE = "garden-companion-v32"; // v32: product instructions researched from the label into Product info + Codex
 const SHELL = [
   "./",
   "./index.html",

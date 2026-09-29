@@ -201,6 +201,9 @@ function ToolDetail({ tool, onBack, onChanged, onNavigate }) {
         ...withPhoto,
         productInfo: info || "No product details could be read from this photo.",
       });
+      // A real label reading → look up the full instructions in the background
+      // and save them to the Codex (helpers.jsx researchProductFromLabel).
+      if (info && typeof ensureLabelResearch === "function") ensureLabelResearch(tool.id);
       setProductOpen(true); // the user just asked for this text — show it
       onChanged();
 
